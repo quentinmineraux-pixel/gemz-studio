@@ -32,6 +32,61 @@ def image_keys(urls: list[str]) -> set[str]:
     return keys
 
 
+def _html_field(html: str, label: str) -> str:
+    match = re.search(rf"{label}\s*:?\s*(?:</strong>|</b>)?\s*:?\s*([^<\n]+)", html, re.I)
+    return match.group(1).strip(" :") if match else ""
+
+
+def facts_from_shopify(title: str, html: str) -> dict:
+    """Retrouve nom, poids, dimensions et provenance d'une fiche déjà en ligne.
+
+    Titre type : « Vanadinite sur baryte en éventail – Mibladen, Maroc – 47 g » ; description avec les
+    lignes Poids / Dimensions / Provenance. Sans ça, une réécriture par l'IA perdrait ces informations.
+    """
+    facts: dict[str, str] = {}
+    parts = [p.strip() for p in re.split(r"\s[–—-]\s", title) if p.strip()]
+    if parts and re.fullmatch(r"[\d.,]+\s*g", parts[-1], re.I):
+        facts["poids_g"] = re.sub(r"\s*g$", "", parts.pop(), flags=re.I).strip()
+    if len(parts) >= 2:
+        place = parts.pop()
+        if "," in place:
+            region, pays = place.rsplit(",", 1)
+            facts["region"], facts["pays"] = region.strip(), pays.strip()
+        else:
+            facts["pays"] = place
+    if parts:
+        name = parts[0]
+        if "," in name:
+            name, variete = name.split(",", 1)
+            facts["variete"] = variete.strip()
+        facts["nom"] = name.strip()
+    poids = _html_field(html, "Poids")
+    if poids and "poids_g" not in facts:
+        facts["poids_g"] = re.sub(r"\s*g\b.*$", "", poids, flags=re.I).strip()
+    dims = _html_field(html, "Dimensions")
+    if dims:
+        facts["dimensions"] = re.sub(r"\s*cm\b.*$", "", dims, flags=re.I).replace("×", "x").replace(" ", "")
+    origin = _html_field(html, "Provenance") or _html_field(html, "Origine")
+    if origin and "pays" not in facts:
+        match = re.match(r"(.+?)\s*\((.+)\)\s*$", origin)
+        if match:
+            facts["region"], facts["pays"] = match.group(1).strip(), match.group(2).strip()
+        else:
+            facts["pays"] = origin
+    return facts
+
+
+def info_from_remote(remote: RemoteListing, settings: Settings, kind_id: str) -> ProductInfo:
+    info = ProductInfo(nom=remote.title, prix=f"{remote.price:.2f}", quantite=max(1, remote.quantity))
+    for key, value in facts_from_shopify(remote.title, remote.description).items():
+        setattr(info, key, value)
+    kind = settings.kind(kind_id)
+    info.sous_categories = [t for t in remote.tags if t in kind.subtags]
+    info.plateformes_choisies = True
+    info.publier_etsy = info.publier_ebay = False
+    return info
+
+
 def kind_for(product_type: str, tags: list[str], settings: Settings) -> str:
     for kind in settings.kinds:
         if kind.shopify_type == product_type and (not kind.fixed_tags or set(kind.fixed_tags) & set(tags)):
@@ -44,7 +99,17 @@ def import_shopify(catalog: Catalog, listings: list[RemoteListing], settings: Se
     known = {item.state("shopify").remote_id for item in catalog.all()}
     skus = catalog.skus()
     added = 0
+    by_remote = {item.state("shopify").remote_id: item for item in catalog.all()}
     for remote in listings:
+        existing = by_remote.get(remote.remote_id)
+        if existing and existing.origin == "import" and not existing.info.poids_g:
+            # Importé par une version précédente : on complète poids, dimensions, provenance
+            def refresh(it, r=remote):
+                facts = info_from_remote(r, settings, it.kind_id)
+                for key in ("nom", "variete", "poids_g", "dimensions", "pays", "region", "sous_categories"):
+                    if getattr(facts, key) and not (key == "nom" and it.listing.source != SOURCE_MANUEL):
+                        setattr(it.info, key, getattr(facts, key))
+            catalog.update(existing.sku, refresh)
         if remote.remote_id in known or remote.extra.get("status") == "ARCHIVED":
             continue
         sku = (remote.skus[0] if remote.skus else "").strip().upper()
@@ -52,9 +117,9 @@ def import_shopify(catalog: Catalog, listings: list[RemoteListing], settings: Se
             sku = f"SHOP{remote.remote_id.rsplit('/', 1)[-1]}"
         listing = Listing(source=SOURCE_MANUEL, ready=True, tags=list(remote.tags))
         listing.texts["fr"] = LangText(title=remote.title, description=remote.description)
-        item = CatalogItem(sku=sku, kind_id=kind_for(remote.product_type, remote.tags, settings),
-                           info=ProductInfo(nom=remote.title, prix=f"{remote.price:.2f}"), listing=listing,
-                           stock=remote.quantity, origin="import")
+        kind_id = kind_for(remote.product_type, remote.tags, settings)
+        item = CatalogItem(sku=sku, kind_id=kind_id, info=info_from_remote(remote, settings, kind_id),
+                           listing=listing, stock=remote.quantity, origin="import")
         state = item.state("shopify")
         state.wanted, state.remote_id, state.url, state.price = True, remote.remote_id, remote.url, remote.price
         state.status = PUBLIE if remote.quantity > 0 else EPUISE

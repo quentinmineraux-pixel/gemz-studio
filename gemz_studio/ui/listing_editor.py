@@ -19,6 +19,9 @@ from ..listing.texts import LANG_LABELS, LANGS
 from ..publishing import write_listing
 from .common import run_in_background
 
+INFO_FIELDS = [("nom", "Nom"), ("variete", "Variété"), ("poids_g", "Poids (g)"), ("dimensions", "Dimensions (cm)"),
+               ("pays", "Pays"), ("region", "Région / mine")]
+
 PIECE_FIELDS = [
     ("nom", "Nom de la pierre", False),
     ("particularite", "Particularité (titre)", False),
@@ -85,6 +88,28 @@ class ListingEditor(QDialog):
 
         # --- tags, plateformes, stock --------------------------------------
         bottom = QHBoxLayout()
+        piece = QGroupBox("La pièce (sert au titre et à la description)")
+        pf = QFormLayout(piece)
+        self.info_inputs: dict[str, QLineEdit] = {}
+        for key, label in INFO_FIELDS:
+            w = QLineEdit(str(getattr(self.item.info, key)))
+            w.textEdited.connect(self._edited)
+            self.info_inputs[key] = w
+            pf.addRow(label, w)
+        kind = app.settings.kind(self.item.kind_id)
+        self.subtag_boxes: list[QCheckBox] = []
+        if kind.subtags:
+            row = QHBoxLayout()
+            for tag in kind.subtags:
+                box = QCheckBox(tag)
+                box.setChecked(tag in self.item.info.sous_categories)
+                box.toggled.connect(self._edited)
+                self.subtag_boxes.append(box)
+                row.addWidget(box)
+            row.addStretch(1)
+            pf.addRow("Sous-catégories", row)
+        bottom.addWidget(piece, 3)
+
         tags = QGroupBox("Tags")
         tl = QFormLayout(tags)
         self.etsy_tags = QLineEdit()
@@ -191,6 +216,14 @@ class ListingEditor(QDialog):
         self.dirty_texts = True
         self._timer.start()
 
+    def _collect_info(self):
+        info = copy.deepcopy(self.item.info)
+        for key, w in self.info_inputs.items():
+            setattr(info, key, w.text().strip())
+        if self.subtag_boxes:
+            info.sous_categories = [b.text() for b in self.subtag_boxes if b.isChecked()]
+        return info
+
     def _collect_listing(self):
         listing = copy.deepcopy(self.item.listing)
         for lang in LANGS:
@@ -200,7 +233,7 @@ class ListingEditor(QDialog):
             listing.pieces[lang] = pieces
         listing.etsy_tags = split_list(self.etsy_tags.text())
         listing.pierres = [p.lower() for p in split_list(self.pierres.text())]
-        return fill_texts(listing, self.item.info, self.app.settings.kind(self.item.kind_id), self.app.settings)
+        return fill_texts(listing, self._collect_info(), self.app.settings.kind(self.item.kind_id), self.app.settings)
 
     def _recompute(self) -> None:
         self._render_preview()
@@ -238,8 +271,11 @@ class ListingEditor(QDialog):
         stock = self.stock.value()
         texts_changed = self.dirty_texts or self.regenerated
 
+        info = self._collect_info()
+
         def apply(item):
             item.listing = listing
+            item.info = info
             for name in PLATFORMS:
                 state = item.state(name)
                 state.wanted = wanted[name] or name == "shopify" or bool(state.remote_id)
@@ -282,6 +318,7 @@ class ListingEditor(QDialog):
         if QMessageBox.question(self, "IA", question) != QMessageBox.Yes:
             return
         work = copy.deepcopy(self.item)
+        work.info = self._collect_info()
         self.regen_btn.setEnabled(False)
         self.regen_btn.setText("Rédaction en cours…")
 

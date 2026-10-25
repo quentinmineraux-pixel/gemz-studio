@@ -222,6 +222,9 @@ class ConnectionsTab(QWidget):
         sf.addRow("Secret", self.shop_secret)
         sf.addRow("Jeton d'accès", self.shop_token)
         sf.addRow("Emplacement du stock", self.shop_location)
+        self.shop_archive = QCheckBox("Pièce vendue (stock 0) : la retirer de la boutique (archivée, récupérable)")
+        self.shop_archive.setChecked(settings.shopify_archive_sold)
+        sf.addRow(self.shop_archive)
         sf.addRow(test)
         layout.addWidget(shop)
 
@@ -251,9 +254,9 @@ class ConnectionsTab(QWidget):
         self.etsy_ready = QLineEdit(settings.etsy_readiness_state_id)
         self.etsy_ready.setPlaceholderText("délai de préparation (rempli au branchement)")
         self.etsy_lang = QComboBox()
-        for code, label in (("en", "Anglais (recommandé)"), ("fr", "Français")):
+        for code, label in (("fr", "Français (langue de la boutique)"), ("en", "Anglais")):
             self.etsy_lang.addItem(label, code)
-        self.etsy_lang.setCurrentIndex(max(0, self.etsy_lang.findData(settings.etsy_language)))
+        self.etsy_lang.setCurrentIndex(max(0, self.etsy_lang.findData(settings.etsy_shop_language)))
         ef.addRow(self.etsy_state)
         ef.addRow("Keystring", self.etsy_key)
         ef.addRow("Shared secret", self.etsy_shared)
@@ -479,6 +482,7 @@ class ConnectionsTab(QWidget):
     def collect(self, s: Settings) -> None:
         s.shopify_domain = self.shop_domain.text().strip()
         s.shopify_location_id = self.shop_location.text().strip()
+        s.shopify_archive_sold = self.shop_archive.isChecked()
         shop_id = getattr(self, "_etsy_shop_id", "")
         if shop_id:
             s.etsy_shop_id = shop_id
@@ -486,7 +490,7 @@ class ConnectionsTab(QWidget):
         s.etsy_return_policy_id = str(self.etsy_returns.currentData() or self.etsy_returns.currentText()).strip()
         s.etsy_when_made = self.etsy_when.currentText().strip() or "made_to_order"
         s.etsy_readiness_state_id = self.etsy_ready.text().strip()
-        s.etsy_language = self.etsy_lang.currentData()
+        s.etsy_shop_language = self.etsy_lang.currentData()
         s.ebay_ru_name = self.ebay_runame.text().strip()
         s.ebay_marketplaces = [m for m, box in (("EBAY_FR", self.ebay_fr), ("EBAY_US", self.ebay_us)) if box.isChecked()]
         s.ebay_location_key = self.ebay_location.text().strip()

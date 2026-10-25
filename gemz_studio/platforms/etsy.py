@@ -269,7 +269,7 @@ class Etsy(Platform):
         if not (self.settings.etsy_shipping_profile_id and self.settings.etsy_return_policy_id):
             raise NotConfigured("Profil d'expédition et politique de retour Etsy à choisir (Réglages → Connexions).")
         shop = self.settings.etsy_shop_id
-        lang = self.settings.etsy_language if self.settings.etsy_language in LANGS else "en"
+        lang = self.settings.etsy_shop_language if self.settings.etsy_shop_language in LANGS else "en"
         title, description = self._texts(item, lang)
         if not state.remote_id:
             body = {
@@ -332,7 +332,7 @@ class Etsy(Platform):
     def update(self, item: CatalogItem, state: PlatformState) -> None:
         if not state.remote_id:
             return self.publish(item, state)
-        lang = self.settings.etsy_language if self.settings.etsy_language in LANGS else "en"
+        lang = self.settings.etsy_shop_language if self.settings.etsy_shop_language in LANGS else "en"
         title, description = self._texts(item, lang)
         self.call("PATCH", f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}",
                   json_body={"title": title, "description": description, "tags": item.listing.etsy_tags})

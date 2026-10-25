@@ -167,6 +167,7 @@ def test_import_shopify_et_liaison_etsy(setup):
 
 def test_etsy_attend_les_textes_anglais(setup):
     settings, catalog, engine = setup
+    settings.etsy_shop_language = "en"
     item = make_item(settings)
     item.listing.pieces["en"] = {}
     catalog.put(item)
@@ -184,3 +185,13 @@ def test_import_avance_les_numeros_de_sku(setup):
     import_shopify(catalog, [remote], settings)
     assert settings.sku_counters["MFC"] == 42
     assert settings.next_sku_number("MFC") == 43
+
+
+def test_import_retrouve_poids_et_provenance():
+    from gemz_studio.importer import facts_from_shopify
+    facts = facts_from_shopify("Vanadinite sur baryte en éventail – Mibladen, Maroc – 47 g",
+                               "<p><strong>Poids :</strong> 47 g<br><strong>Dimensions :</strong> 6 × 4 × 3 cm</p>")
+    assert facts == {"poids_g": "47", "region": "Mibladen", "pays": "Maroc",
+                     "nom": "Vanadinite sur baryte en éventail", "dimensions": "6x4x3"}
+    facts = facts_from_shopify("Hémimorphite bleu turquoise, cristaux en relief – Congo – 71,8 g", "")
+    assert facts["poids_g"] == "71,8" and facts["pays"] == "Congo" and facts["variete"] == "cristaux en relief"

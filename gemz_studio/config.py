@@ -111,12 +111,13 @@ class Settings:
     # --- connexions (identifiants non secrets ; jetons dans secrets.py) ---
     shopify_domain: str = ""      # ex. gem-z.myshopify.com
     shopify_location_id: str = ""
+    shopify_archive_sold: bool = True   # pièce épuisée : archivée sur Shopify (cachée), réactivée si restock
     etsy_shop_id: str = ""
     etsy_shipping_profile_id: str = ""
     etsy_return_policy_id: str = ""
     etsy_when_made: str = "made_to_order"
     etsy_readiness_state_id: str = ""
-    etsy_language: str = "en"     # langue principale des annonces Etsy (les autres en traductions)
+    etsy_shop_language: str = "fr"     # langue de la boutique Etsy (StoreGemZ : français) ; les autres en traductions
     ebay_marketplaces: list[str] = field(default_factory=lambda: ["EBAY_FR", "EBAY_US"])
     ebay_location_key: str = ""
     ebay_policies: dict[str, dict[str, str]] = field(default_factory=dict)  # place -> fulfillment/payment/return

@@ -127,7 +127,7 @@ class Engine:
         state = replace(item.state(name))
         was_update = state.status == A_METTRE_A_JOUR or bool(state.remote_id and state.status == PUBLIE)
         label = PLATFORM_LABELS[name]
-        english = name == "etsy" and self.settings.etsy_language == "en" or \
+        english = name == "etsy" and self.settings.etsy_shop_language == "en" or \
             name == "ebay" and "EBAY_US" in self.settings.ebay_marketplaces
         if english and not item.listing.has_lang("en"):
             state.error = "Textes anglais à compléter dans la fiche (ou à rédiger avec l'IA)."

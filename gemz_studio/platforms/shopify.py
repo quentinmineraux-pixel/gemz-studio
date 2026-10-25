@@ -52,6 +52,16 @@ mutation GemzPublish($id: ID!, $input: [PublicationInput!]!) {
   publishablePublish(id: $id, input: $input) { userErrors { field message } }
 }"""
 
+PRODUCT_CURRENT = """
+query GemzCurrent($id: ID!) {
+  product(id: $id) { tags status metafields(first: 20, namespace: "custom") { nodes { key value type } } }
+}"""
+
+PRODUCT_UPDATE = """
+mutation GemzUpdate($product: ProductUpdateInput!) {
+  productUpdate(product: $product) { product { id } userErrors { field message } }
+}"""
+
 VARIANTS_PRICE = """
 mutation GemzPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
   productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
@@ -363,9 +373,19 @@ class Shopify(Platform):
         if not state.remote_id:
             return self.publish(item, state)
         kind = self.settings.kind(item.kind_id)
-        data = self.graphql(PRODUCT_SET, {"identifier": {"id": state.remote_id},
-                                          "input": self._product_fields(item, kind)})
-        self._user_errors(data["productSet"], "mise à jour")
+        fields = self._product_fields(item, kind)
+        # On ne retire jamais rien : tags et métachamps déjà présents (collections, forme…) sont gardés
+        current = self.graphql(PRODUCT_CURRENT, {"id": state.remote_id})["product"] or {}
+        tags = list(current.get("tags") or [])
+        tags += [t for t in fields["tags"] if t not in tags]
+        sent = {m["key"] for m in fields["metafields"]}
+        metafields = fields["metafields"] + [
+            {"namespace": "custom", "key": m["key"], "type": m["type"], "value": m["value"]}
+            for m in (current.get("metafields") or {}).get("nodes", []) if m["key"] not in sent]
+        data = self.graphql(PRODUCT_UPDATE, {"product": {
+            "id": state.remote_id, "title": fields["title"], "descriptionHtml": fields["descriptionHtml"],
+            "seo": fields["seo"], "tags": tags, "metafields": metafields}})
+        self._user_errors(data["productUpdate"], "mise à jour")
         _options, variants = self._variants(item, kind.form)
         known = state.extra.get("variants", {})
         prices = [{"id": known[v["sku"]]["id"], "price": v["price"]} for v in variants if v["sku"] in known]
@@ -398,12 +418,18 @@ class Shopify(Platform):
         quantities = [{"inventoryItemId": inv, "locationId": location, "quantity": max(0, quantity),
                        "changeFromQuantity": current}
                       for _sku, inv, current in self._levels(state.remote_id) if current != max(0, quantity)]
-        if not quantities:
-            return
-        data = self.graphql(SET_QUANTITIES, {"key": str(uuid.uuid4()), "input": {
-            "name": "available", "reason": "correction", "quantities": quantities,
-            "referenceDocumentUri": f"gemz://synchro/{item.sku}"}})
-        self._user_errors(data["inventorySetQuantities"], "stock")
+        if quantities:
+            data = self.graphql(SET_QUANTITIES, {"key": str(uuid.uuid4()), "input": {
+                "name": "available", "reason": "correction", "quantities": quantities,
+                "referenceDocumentUri": f"gemz://synchro/{item.sku}"}})
+            self._user_errors(data["inventorySetQuantities"], "stock")
+        if self.settings.shopify_archive_sold:
+            # Pièce vendue : retirée de la boutique (archivée, donc récupérable), remise en ligne si restock
+            status = (self.graphql(PRODUCT_CURRENT, {"id": state.remote_id})["product"] or {}).get("status")
+            wanted = "ARCHIVED" if quantity <= 0 else "ACTIVE"
+            if status in ("ACTIVE", "ARCHIVED") and status != wanted:
+                data = self.graphql(PRODUCT_UPDATE, {"product": {"id": state.remote_id, "status": wanted}})
+                self._user_errors(data["productUpdate"], "archivage")
 
     def remote_quantity(self, item: CatalogItem, state: PlatformState) -> int | None:
         if not state.remote_id:
