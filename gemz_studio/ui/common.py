@@ -26,6 +26,22 @@ def video_icon(size: int = 160) -> QIcon:
     return QIcon(pil_to_pixmap(img))
 
 
+def video_thumbnail_icon(path: str | Path, size: int = 240) -> QIcon:
+    """Vignette d'une vidéo : une image du film avec le symbole lecture par-dessus."""
+    from PIL import ImageDraw
+
+    from ..video import video_frame
+
+    img = video_frame(path)
+    img.thumbnail((size, size))
+    d = ImageDraw.Draw(img, "RGBA")
+    c, r = (img.width // 2, img.height // 2), min(img.size) // 6
+    d.ellipse((c[0] - r, c[1] - r, c[0] + r, c[1] + r), fill=(0, 0, 0, 140))
+    d.polygon([(c[0] - r // 3, c[1] - r // 2), (c[0] - r // 3, c[1] + r // 2), (c[0] + r // 2, c[1])],
+              fill=(255, 255, 255, 230))
+    return QIcon(pil_to_pixmap(img))
+
+
 def open_in_explorer(path: str | Path) -> None:
     if sys.platform == "win32":
         os.startfile(str(path))  # noqa: S606

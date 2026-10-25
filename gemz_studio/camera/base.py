@@ -72,6 +72,9 @@ class CameraBackend:
     def collect_card_movies(self) -> int:
         """Télécharge les vidéos restées sur la carte puis les efface ; renvoie leur nombre."""
         return 0
+    def delete_card_movies(self, names: list[str]) -> int:
+        """Efface de la carte les vidéos portant ces noms (déjà rapatriées) ; renvoie leur nombre."""
+        return 0
 
     def target_path(self, filename: str) -> Path:
         """Chemin libre dans le dossier de téléchargement (ne jamais écraser un fichier)."""

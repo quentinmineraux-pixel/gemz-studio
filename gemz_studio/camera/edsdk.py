@@ -597,6 +597,19 @@ class EdsdkCamera(CameraBackend):
                 self.sdk.EdsRelease(item)
         return count
 
+    def delete_card_movies(self, names: list[str]) -> int:
+        wanted = {n.upper() for n in names}
+        count = 0
+        for item in list(self._walk_card()):
+            name = self._item_name(item)
+            try:
+                if name and name.upper() in wanted:
+                    self._retry_busy(lambda: self.sdk.EdsDeleteDirectoryItem(item), "effacement de la carte")
+                    count += 1
+            finally:
+                self.sdk.EdsRelease(item)
+        return count
+
     def _children(self, ref):
         count = c_uint32(0)
         if self.sdk.EdsGetChildCount(ref, byref(count)) != EDS_ERR_OK:

@@ -1,6 +1,7 @@
 """Fenêtre principale : produits de la séance, photos du produit, fiche."""
 from __future__ import annotations
 
+import re
 import shutil
 import traceback
 from pathlib import Path
@@ -16,15 +17,21 @@ from ..camera import MODE_FOLDER, CameraError, make_backend
 from ..config import APP_NAME, Settings, data_dir
 from ..grouping import Grouper
 from ..imaging import render_web, thumbnail
-from ..models import A_COMPLETER, EN_PRISE, EN_TRAITEMENT, ERREUR, PRET, STATUS_LABELS, Session
+from ..models import VIDEO_EXT, A_COMPLETER, EN_PRISE, EN_TRAITEMENT, ERREUR, PRET, STATUS_LABELS, Session
 from ..processing import process_product
 from ..watcher import FolderWatcher
 from .camera_panel import CameraPanel
-from .common import open_in_explorer, pil_to_pixmap, video_icon
+from .common import open_in_explorer, pil_to_pixmap, video_icon, video_thumbnail_icon
 from .product_form import ProductForm
 from .settings_dialog import SettingsDialog
 
 SESSION_FILE = "seance_en_cours.json"
+
+
+def card_name(path: str) -> str:
+    """Nom du fichier sur la carte (sans le « _2 » ajouté si un fichier du même nom existait déjà)."""
+    p = Path(path)
+    return re.sub(r"_\d+$", "", p.stem) + p.suffix if re.match(r"^[A-Z]{3}_\d{4}_\d+$", p.stem) else p.name
 
 
 class Bridge(QObject):
@@ -259,9 +266,12 @@ class MainWindow(QMainWindow):
     def _icon(self, path: str) -> QIcon:
         if path not in self.thumbs:
             try:
-                self.thumbs[path] = QIcon(pil_to_pixmap(thumbnail(path, 240)))
-            except OSError:
-                return QIcon()
+                if Path(path).suffix.lower() in VIDEO_EXT:
+                    self.thumbs[path] = video_thumbnail_icon(path)
+                else:
+                    self.thumbs[path] = QIcon(pil_to_pixmap(thumbnail(path, 240)))
+            except Exception:  # noqa: BLE001 - fichier en cours d'écriture ou illisible
+                return self.video_icon if Path(path).suffix.lower() in VIDEO_EXT else QIcon()
         return self.thumbs[path]
 
     def _current_product(self):
@@ -299,7 +309,7 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, path)
             self.media.addItem(item)
         for path in product.videos:
-            item = QListWidgetItem(self.video_icon, Path(path).name)
+            item = QListWidgetItem(self._icon(path), Path(path).name)
             item.setData(Qt.UserRole, path)
             self.media.addItem(item)
         pending = self.grouper.pending_replace if self.grouper else None
@@ -365,7 +375,14 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         path = item.data(Qt.UserRole)
-        if path and Path(path).suffix.lower() in (".jpg", ".jpeg", ".png"):
+        if not path:
+            return
+        if Path(path).suffix.lower() in VIDEO_EXT:
+            # Lecture dans le lecteur vidéo de Windows ; version avec logo si le produit est déjà traité
+            product = self._current_product()
+            web = sorted(Path(product.folder, "web").glob("*_video.mp4")) if product and product.folder else []
+            open_in_explorer(web[0] if web and product.status == PRET else path)
+        elif Path(path).suffix.lower() in (".jpg", ".jpeg", ".png"):
             PreviewDialog(path, self.settings, self).exec()
 
     # --- traitement --------------------------------------------------------
@@ -386,6 +403,7 @@ class MainWindow(QMainWindow):
         self._save_session()
         self._refresh_products()
         self.pool.start(ProcessJob(self.bridge, product, self.session.day, self.settings))
+        self.camera.delete_card_movies([card_name(v) for v in product.videos])
         # On passe directement au produit suivant à compléter
         for i, p in enumerate(self.session.products):
             if p.status in (A_COMPLETER, EN_PRISE) and p.id != product.id:

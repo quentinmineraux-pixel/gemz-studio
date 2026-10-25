@@ -180,10 +180,13 @@ class BridgeCamera(CameraBackend):
     def collect_card_movies(self) -> int:
         return int(self._call("collect_card_movies") or 0)
 
+    def delete_card_movies(self, names: list[str]) -> int:
+        return int(self._call("delete_card_movies", list(names)) or 0)
+
 
 ALLOWED = {"thread_init", "thread_exit", "connect", "disconnect", "poll", "start_liveview", "stop_liveview",
            "liveview_frame", "autofocus", "focus_step", "set_zoom", "capture", "start_movie", "stop_movie",
-           "collect_card_movies", "focus_at", "get_settings", "set_setting"}
+           "collect_card_movies", "delete_card_movies", "focus_at", "get_settings", "set_setting"}
 
 
 def main(argv: list[str] | None = None) -> None:

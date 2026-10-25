@@ -162,6 +162,11 @@ class CameraPanel(QWidget):
         self.view.clear()
         self.view.setText("Visée en direct")
 
+    def delete_card_movies(self, names: list[str]) -> None:
+        """Vidéos d'un produit validé : on s'assure qu'elles ne restent pas sur la carte."""
+        if names:
+            self._send("delete_card_movies", list(names))
+
     def set_liveview(self, on: bool) -> None:
         self._send("liveview", on)
 

@@ -45,3 +45,19 @@ def watermark_video(src: str | Path, dest: Path, settings: Settings) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg a échoué : {result.stderr.strip()[-500:]}")
     return dest
+
+
+def video_frame(path: str | Path, at: float = 1.0):
+    """Une image de la vidéo (pour la vignette)."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-ss", f"{at}", "-i", str(path),
+           "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
+    result = subprocess.run(cmd, capture_output=True, creationflags=_NO_WINDOW, timeout=30)
+    if result.returncode != 0 or not result.stdout:
+        if at > 0:
+            return video_frame(path, 0)
+        raise OSError(f"image de la vidéo illisible : {Path(path).name}")
+    return Image.open(BytesIO(result.stdout)).convert("RGB")

@@ -33,6 +33,7 @@ class CameraWorker:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self._liveview_wanted = True
+        self._pending_deletes: list[str] = []
 
     def start(self) -> None:
         self._thread.start()
@@ -91,6 +92,9 @@ class CameraWorker:
                     self.backend.start_liveview()
                 self.on_state(True, f"{self.backend.name} connecté")
                 self._push_settings()
+                if self._pending_deletes:
+                    self.send("delete_card_movies", self._pending_deletes)
+                    self._pending_deletes = []
         except CameraDisconnected:
             self._lost()
         except CameraError as e:
@@ -115,10 +119,12 @@ class CameraWorker:
     def _drain_commands_while_offline(self) -> None:
         while True:
             try:
-                command, _ = self._commands.get_nowait()
+                command, args = self._commands.get_nowait()
             except queue.Empty:
                 return
-            if command in ("capture", "start_movie"):
+            if command == "delete_card_movies":
+                self._pending_deletes.extend(args[0])  # fait à la prochaine connexion
+            elif command in ("capture", "start_movie"):
                 self.on_status("Aucun appareil connecté : branche le boîtier en USB et allume-le.")
 
     def _handle_commands(self) -> None:
@@ -133,6 +139,10 @@ class CameraWorker:
             elif command == "collect_card_movies":
                 n = self.backend.collect_card_movies()
                 self.on_status(f"{n} vidéo(s) récupérée(s) depuis la carte" if n else "Aucune vidéo sur la carte")
+            elif command == "delete_card_movies":
+                n = self.backend.delete_card_movies(*args)
+                if n:
+                    self.on_status(f"{n} vidéo(s) du produit validé effacée(s) de la carte")
             elif command in ("start_movie", "stop_movie"):
                 try:
                     getattr(self.backend, command)()
