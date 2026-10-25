@@ -142,12 +142,15 @@ class Shopify(Platform):
 
     # --- connexion -----------------------------------------------------------
     def configured(self) -> bool:
-        return bool(self.settings.shopify_domain and (vault.get(SECRET_TOKEN) or
+        return bool(self.settings.shopify_domain and self.domain.endswith(".myshopify.com") and (vault.get(SECRET_TOKEN) or
                     (vault.get(SECRET_CLIENT_ID) and vault.get(SECRET_CLIENT_SECRET))))
 
     def missing_setup(self) -> str:
         if not self.settings.shopify_domain:
             return "Adresse de la boutique (xxx.myshopify.com) à renseigner."
+        if not self.domain.endswith(".myshopify.com"):
+            return (f"Mets l'adresse technique en .myshopify.com (Shopify → Paramètres → Domaines), "
+                    f"pas {self.domain}.")
         if not self.configured():
             return "Identifiants de l'application Shopify à renseigner."
         return ""
