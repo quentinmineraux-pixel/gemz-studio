@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 from gemz_studio.camera.edsdk import _DirItemInfo32, _DirItemInfo64, _valid_name, find_edsdk_dll
 from gemz_studio.camera.fake import FakeCamera
@@ -6,6 +7,7 @@ from gemz_studio.camera.worker import CameraWorker
 
 
 def test_trouve_la_dll_64_bits(tmp_path):
+    tmp_path = tmp_path / "Kit 64 bits"  # « 64 » dans le dossier choisi ne doit pas fausser le choix
     for sub in ("EDSDK/Dll", "EDSDK_64/Dll"):
         (tmp_path / sub).mkdir(parents=True)
         (tmp_path / sub / "EDSDK.dll").write_bytes(b"")
@@ -42,4 +44,4 @@ def test_worker_avec_appareil_simule(tmp_path):
         time.sleep(0.05)
     worker.stop()
     assert states[0] is True
-    assert [p.split("/")[-1] for p in received] == ["IMG_0001.JPG", "IMG_0002.JPG"]
+    assert [Path(p).name for p in received] == ["IMG_0001.JPG", "IMG_0002.JPG"]

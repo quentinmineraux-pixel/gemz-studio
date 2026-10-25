@@ -105,7 +105,8 @@ def find_edsdk_dll(folder: str | Path) -> Path | None:
     if not candidates:
         return None
     want_64 = sys.maxsize > 2**32
-    candidates.sort(key=lambda p: (("64" in str(p)) != want_64, len(p.parts)))
+    # Seule la partie interne au kit compte (le chemin du dossier choisi peut contenir « 64 »)
+    candidates.sort(key=lambda p: (("64" in str(p.relative_to(root))) != want_64, len(p.parts)))
     return candidates[0]
 
 
