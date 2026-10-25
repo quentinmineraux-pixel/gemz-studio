@@ -47,6 +47,8 @@ kEdsCameraCommand_ExtendShutDownTimer = 0x00000001
 kEdsCameraCommand_PressShutterButton = 0x00000004
 kEdsCameraCommand_DoEvfAf = 0x00000102
 kEdsCameraCommand_DriveLensEvf = 0x00000103
+kEdsCameraCommand_MovieSelectSwON = 0x00000107   # passe le boîtier en mode vidéo (comme EOS Utility)
+kEdsCameraCommand_MovieSelectSwOFF = 0x00000108  # retour en mode photo
 kEdsShutterButton_OFF = 0x00000000
 kEdsShutterButton_Completely_NonAF = 0x00010003
 
@@ -496,10 +498,11 @@ class EdsdkCamera(CameraBackend):
     def start_movie(self) -> None:
         # Le kit ne filme jamais vers le PC : la vidéo doit être enregistrée sur la carte
         self._set_u32(kEdsPropID_SaveTo, kEdsSaveTo_Camera)
+        self._switch_movie_mode(True)
         try:
             self._set_u32(kEdsPropID_Record, kEdsRecord_Start)
             started = False
-            for _ in range(10):  # le boîtier peut accepter la commande sans filmer : on vérifie
+            for _ in range(20):  # le boîtier peut accepter la commande sans filmer : on vérifie
                 time.sleep(0.1)
                 self._events()
                 if self._get_u32(kEdsPropID_Record) == kEdsRecord_Start:
@@ -510,21 +513,25 @@ class EdsdkCamera(CameraBackend):
         except CameraError:
             started = False
         if not started:
+            self._switch_movie_mode(False)
             self._restore_save_to_host()
-            raise CameraError("La vidéo n'a pas démarré : place le sélecteur photo/vidéo du 6D Mark II sur la "
-                              "caméra rouge et vérifie qu'une carte SD est dans le boîtier.")
+            raise CameraError("La vidéo n'a pas démarré : vérifie qu'une carte SD est dans le boîtier, ou mets la "
+                              "molette sur la position vidéo.")
         self.recording = True
 
     def stop_movie(self) -> None:
         try:
             self._set_u32(kEdsPropID_Record, kEdsRecord_Stop)
+            stopped = True
         except CameraDisconnected:
             raise
         except CameraError:
-            if self._get_u32(kEdsPropID_Record) != kEdsRecord_Stop:
-                raise CameraError("L'appareil refuse d'arrêter la vidéo pour l'instant, réessaie.")
+            stopped = False
         self.recording = False
         try:
+            if not stopped:
+                self.on_status("Le boîtier ne filmait pas : aucune vidéo à récupérer.")
+                return
             # Selon les boîtiers, l'événement de fin d'écriture n'arrive pas : on vérifie aussi la carte
             before = self.downloads
             for _ in range(30):
@@ -534,7 +541,34 @@ class EdsdkCamera(CameraBackend):
                     return
             self.on_status("Vidéo non retrouvée sur la carte : utilise « Récupérer les vidéos de la carte ».")
         finally:
+            self._switch_movie_mode(False)
             self._restore_save_to_host()
+
+    def _switch_movie_mode(self, on: bool) -> None:
+        """Bascule photo/vidéo à distance (6D Mark II et boîtiers récents) ; sans effet si non géré."""
+        command = kEdsCameraCommand_MovieSelectSwON if on else kEdsCameraCommand_MovieSelectSwOFF
+        err = EDS_ERR_DEVICE_BUSY
+        for _ in range(20):
+            err = self._command(command, 0)
+            if err != EDS_ERR_DEVICE_BUSY:
+                break
+            time.sleep(0.1)
+            self._events()
+        if err != EDS_ERR_OK:
+            self.on_status(f"Bascule {'vidéo' if on else 'photo'} non gérée par le kit (0x{err:08X}).")
+            return
+        # Le boîtier relance sa visée en changeant de mode (écran noir, « clic ») : on attend puis on
+        # renvoie la visée vers le PC
+        for _ in range(15):
+            time.sleep(0.1)
+            self._events()
+        if self.liveview:
+            try:
+                self.start_liveview()
+            except CameraDisconnected:
+                raise
+            except CameraError:
+                pass
 
     def _events(self) -> None:
         if sys.platform == "win32":
