@@ -28,6 +28,34 @@ Bouton **Réglages** :
 - **Médias par produit** : nombre de photos et de vidéos qui déclenche le passage automatique au produit
   suivant (8 photos + 1 vidéo par défaut).
 
+## Piloter le Canon sans EOS Utility
+
+GemZ Studio peut piloter directement le 6D Mark II avec le kit officiel Canon (EDSDK), que tu télécharges
+toi-même sur le Canon Developer Portal (il n'est pas fourni avec l'outil, licence Canon).
+
+1. Dézipper le kit Canon, par exemple dans `Documents\EDSDK`.
+2. **Réglages** → Appareil photo → Mode « Pilotage direct Canon (EDSDK) », puis choisir ce dossier
+   (l'outil trouve seul `EDSDK.dll`. Un kit 32 bits, comme la version 3.6.1, marche aussi : il est alors
+   chargé par le petit module `gemz-canon32.exe` inclus dans GemZ Studio, et son journal est dans
+   `%APPDATA%\GemZ Studio\canon32.log`).
+3. Fermer EOS Utility, brancher le boîtier en USB et l'allumer : il se connecte tout seul, à chaque
+   ouverture de GemZ Studio.
+4. Les réglages (ISO, vitesse, ouverture, correction, balance des blancs et température) se choisissent
+   en haut de l'écran Prise de vue. Pour tout régler d'ici, mets la molette du boîtier sur **M** ; tourner
+   une molette du boîtier met aussi l'écran à jour. Un clic dans la visée fait la mise au point à cet
+   endroit (autofocus du boîtier réglé sur « 1 collimateur », pas sur le suivi de visage).
+
+Onglet **Prise de vue** :
+
+- visée en direct, mise au point auto (AF) ou manuelle par pas (`<` plus près, `>` plus loin), loupe x5 / x10 ;
+- **Déclencher la photo** (ou la touche Espace) : la photo part directement sur le PC, sans passer par la
+  carte. Le déclenchement se fait sans AF, pour garder la même mise au point sur les 8 angles du plateau ;
+- **Démarrer / Arrêter la vidéo** : le sélecteur du boîtier doit être sur la position vidéo. À l'arrêt, la
+  vidéo est rapatriée puis effacée de la carte, sans clic supplémentaire ;
+- **Récupérer les vidéos de la carte** : rapatrie et efface les vidéos restées sur la carte.
+
+Le mode « Appareil simulé » permet d'essayer l'écran sans boîtier.
+
 ## Une séance
 
 1. **Nouvelle séance** → choisir le type de produit (les mêmes types que les collections Shopify).

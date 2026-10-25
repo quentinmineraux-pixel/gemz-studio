@@ -12,6 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: py64
         with:
           python-version: "3.12"
           cache: pip
@@ -19,8 +20,19 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - name: Tests
         run: python -m pytest -q
+      - uses: actions/setup-python@v5
+        id: py32
+        with:
+          python-version: "3.12"
+          architecture: x86
+      - name: Fabrication du module Canon 32 bits
+        run: |
+          & "${{ steps.py32.outputs.python-path }}" -m pip install pyinstaller==6.16.0
+          & "${{ steps.py32.outputs.python-path }}" -m PyInstaller --noconfirm canon32.spec
+      - name: Vérification du module Canon 32 bits
+        run: '& "${{ steps.py64.outputs.python-path }}" tools/check_canon32.py'
       - name: Fabrication du .exe
-        run: python -m PyInstaller --noconfirm gemz_studio.spec
+        run: '& "${{ steps.py64.outputs.python-path }}" -m PyInstaller --noconfirm gemz_studio.spec'
       - uses: actions/upload-artifact@v4
         with:
           name: GemZ-Studio-Windows

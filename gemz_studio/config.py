@@ -81,6 +81,9 @@ class Settings:
     web_max_side: int = 2048
     jpeg_quality: int = 90
     auto_split: bool = True
+    # « dossier » (EOS Utility), « canon » (pilotage direct EDSDK) ou « simule »
+    camera_mode: str = "dossier"
+    edsdk_folder: str = ""
     # Dernier numéro utilisé par préfixe, comme dans la boutique (MFC1…MFC42, FLLAB1…)
     sku_counters: dict[str, int] = field(default_factory=dict)
     kinds: list[ProductKind] = field(default_factory=lambda: [ProductKind(**asdict(k)) for k in DEFAULT_KINDS])

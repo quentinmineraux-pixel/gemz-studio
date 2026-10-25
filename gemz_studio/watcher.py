@@ -22,6 +22,8 @@ def wait_until_complete(path: Path, stable_for: float = 0.6, timeout: float = 12
             size = path.stat().st_size
             with open(path, "rb"):
                 pass
+        except FileNotFoundError:
+            return False  # fichier temporaire déjà renommé ou supprimé
         except OSError:
             time.sleep(0.3)
             continue

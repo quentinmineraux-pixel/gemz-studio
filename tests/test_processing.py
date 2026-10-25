@@ -77,3 +77,17 @@ def test_sku_impose_et_numerotation_par_prefixe(tmp_path):
     for p in (a, b, c):
         process_product(p, "2026-10-25", settings)
     assert [a.sku, b.sku, c.sku] == ["FLLAB21", "LM1", "LM2"]
+
+
+def test_vignette_video(tmp_path):
+    import subprocess
+
+    import imageio_ffmpeg
+
+    from gemz_studio.video import video_frame
+
+    clip = tmp_path / "MVI_0001.MP4"
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc=s=320x240:d=0.5", "-pix_fmt", "yuv420p", str(clip)], check=True)
+    img = video_frame(clip)  # film plus court que 1 s : retombe sur la première image
+    assert img.size == (320, 240)
