@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ..camera import MODE_CANON, MODE_LABELS
 from ..config import Settings
 from ..imaging import adjust, apply_watermark, load_photo
 from .common import pil_to_pixmap
@@ -63,9 +64,23 @@ class SettingsDialog(QDialog):
         fl = QFormLayout(folders)
         self.watch = PathPicker(self.settings.watch_folder, placeholder="Dossier d'enregistrement d'EOS Utility")
         self.output = PathPicker(self.settings.output_folder, placeholder="Où ranger les produits traités")
-        fl.addRow("Dossier surveillé", self.watch)
+        fl.addRow("Dossier des photos reçues", self.watch)
         fl.addRow("Dossier de sortie", self.output)
         left.addWidget(folders)
+
+        cam = QGroupBox("Appareil photo")
+        cl = QFormLayout(cam)
+        self.camera_mode = QComboBox()
+        for mode, label in MODE_LABELS.items():
+            self.camera_mode.addItem(label, mode)
+        self.camera_mode.setCurrentIndex(max(0, self.camera_mode.findData(self.settings.camera_mode)))
+        self.edsdk = PathPicker(self.settings.edsdk_folder, placeholder="Dossier du kit Canon dézippé")
+        cl.addRow("Mode", self.camera_mode)
+        cl.addRow("Kit Canon (EDSDK)", self.edsdk)
+        self.camera_mode.currentIndexChanged.connect(
+            lambda: self.edsdk.setEnabled(self.camera_mode.currentData() == MODE_CANON))
+        self.edsdk.setEnabled(self.settings.camera_mode == MODE_CANON)
+        left.addWidget(cam)
 
         wm = QGroupBox("Watermark (bas droite)")
         wl = QFormLayout(wm)
@@ -160,6 +175,8 @@ class SettingsDialog(QDialog):
     def _collect(self) -> Settings:
         s = self.settings
         s.watch_folder = self.watch.value()
+        s.camera_mode = self.camera_mode.currentData()
+        s.edsdk_folder = self.edsdk.value()
         s.output_folder = self.output.value()
         s.logo_path = self.logo.value()
         s.watermark_scale = self.scale.value() / 100

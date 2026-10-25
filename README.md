@@ -28,6 +28,28 @@ Bouton **Réglages** :
 - **Médias par produit** : nombre de photos et de vidéos qui déclenche le passage automatique au produit
   suivant (8 photos + 1 vidéo par défaut).
 
+## Piloter le Canon sans EOS Utility
+
+GemZ Studio peut piloter directement le 6D Mark II avec le kit officiel Canon (EDSDK), que tu télécharges
+toi-même sur le Canon Developer Portal (il n'est pas fourni avec l'outil, licence Canon).
+
+1. Dézipper le kit Canon, par exemple dans `Documents\EDSDK`.
+2. **Réglages** → Appareil photo → Mode « Pilotage direct Canon (EDSDK) », puis choisir ce dossier
+   (l'outil trouve seul `EDSDK.dll` en version 64 bits).
+3. Fermer EOS Utility, brancher le boîtier en USB et l'allumer : il se connecte tout seul, à chaque
+   ouverture de GemZ Studio.
+
+Onglet **Prise de vue** :
+
+- visée en direct, mise au point auto (AF) ou manuelle par pas (`<` plus près, `>` plus loin), loupe x5 / x10 ;
+- **Déclencher la photo** (ou la touche Espace) : la photo part directement sur le PC, sans passer par la
+  carte. Le déclenchement se fait sans AF, pour garder la même mise au point sur les 8 angles du plateau ;
+- **Démarrer / Arrêter la vidéo** : le sélecteur du boîtier doit être sur la position vidéo. À l'arrêt, la
+  vidéo est rapatriée puis effacée de la carte, sans clic supplémentaire ;
+- **Récupérer les vidéos de la carte** : rapatrie et efface les vidéos restées sur la carte.
+
+Le mode « Appareil simulé » permet d'essayer l'écran sans boîtier.
+
 ## Une séance
 
 1. **Nouvelle séance** → choisir le type de produit (les mêmes types que les collections Shopify).

@@ -8,17 +8,18 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter,
-    QVBoxLayout, QWidget,
+    QDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from ..camera import MODE_FOLDER, CameraError, make_backend
 from ..config import APP_NAME, Settings, data_dir
 from ..grouping import Grouper
 from ..imaging import render_web, thumbnail
 from ..models import A_COMPLETER, EN_PRISE, EN_TRAITEMENT, ERREUR, PRET, STATUS_LABELS, Session
 from ..processing import process_product
 from ..watcher import FolderWatcher
+from .camera_panel import CameraPanel
 from .common import open_in_explorer, pil_to_pixmap, video_icon
 from .product_form import ProductForm
 from .settings_dialog import SettingsDialog
@@ -82,6 +83,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_body()
         self._resume_session()
+        self._start_camera()
 
     # --- construction ------------------------------------------------------
     def _build_toolbar(self) -> None:
@@ -134,7 +136,13 @@ class MainWindow(QMainWindow):
         cl.addLayout(actions)
         self.hint = QLabel()
         cl.addWidget(self.hint)
-        splitter.addWidget(center)
+        self.camera = CameraPanel()
+        self.camera.fileArrived.connect(self._on_file)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.camera, "Prise de vue")
+        self.tabs.addTab(center, "Photos du produit")
+        self.tabs.currentChanged.connect(lambda i: self.camera.set_liveview(self.tabs.widget(i) is self.camera))
+        splitter.addWidget(self.tabs)
 
         self.form = ProductForm()
         self.form.processRequested.connect(self.process)
@@ -199,6 +207,27 @@ class MainWindow(QMainWindow):
         else:
             self.watch_label.setText("Dossier surveillé introuvable, vérifie les réglages")
 
+    def _start_camera(self) -> None:
+        """Connexion automatique de l'appareil dès l'ouverture, si le pilotage direct est choisi."""
+        self.camera.stop()
+        mode, folder = self.settings.camera_mode, self.settings.watch_folder
+        if mode == MODE_FOLDER:
+            self.tabs.setTabVisible(0, False)
+            self.tabs.setCurrentIndex(1)
+            return
+        self.tabs.setTabVisible(0, True)
+        self.tabs.setCurrentIndex(0)
+        if not folder or not Path(folder).is_dir():
+            self.camera.state_label.setText("Choisis le dossier des photos reçues dans les réglages.")
+            return
+        try:
+            backend = make_backend(mode, folder, self.settings.edsdk_folder)
+        except CameraError as e:
+            self.camera.state_label.setText(str(e))
+            return
+        if backend:
+            self.camera.start(backend)
+
     def _save_session(self) -> None:
         if self.session:
             self.session.save(self._session_path())
@@ -212,6 +241,8 @@ class MainWindow(QMainWindow):
     # --- réception des fichiers -------------------------------------------
     def _on_file(self, path: str) -> None:
         if not self.grouper:
+            self.camera.status_label.setText(
+                f"{Path(path).name} reçu, mais aucune séance n'est ouverte : clique sur « Nouvelle séance ».")
             return
         product = self.grouper.add(path)
         if product is None:
@@ -383,7 +414,8 @@ class MainWindow(QMainWindow):
         sample = product.photos[0] if product and product.photos else None
         dialog = SettingsDialog(self.settings, sample, self)
         if dialog.exec() == QDialog.Accepted:
-            old_folder = self.settings.watch_folder
+            old = (self.settings.watch_folder, self.settings.camera_mode, self.settings.edsdk_folder)
+            old_folder = old[0]
             new = dialog.result_settings()
             # Les compteurs de SKU ont pu avancer pendant que la fenêtre était ouverte
             new.sku_counters = dict(self.settings.sku_counters)
@@ -394,11 +426,14 @@ class MainWindow(QMainWindow):
                 self.grouper.auto_split = self.settings.auto_split
                 if self.settings.watch_folder != old_folder:
                     self._start(self.session)
+            if (self.settings.watch_folder, self.settings.camera_mode, self.settings.edsdk_folder) != old:
+                self._start_camera()
 
     def closeEvent(self, event) -> None:
         self.form.commit()
         self._save_session()
         if self.watcher:
             self.watcher.stop()
+        self.camera.stop()
         self.pool.waitForDone(30000)
         super().closeEvent(event)
