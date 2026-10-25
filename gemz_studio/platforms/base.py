@@ -30,7 +30,7 @@ class Sale:
     sku: str
     remote_id: str            # produit / annonce sur la plateforme
     quantity: int
-    price: float
+    price: float              # prix unitaire
     currency: str
     created: str
     title: str = ""
@@ -111,6 +111,10 @@ class Platform:
         raise NotImplementedError
 
     def set_quantity(self, item, state, quantity: int) -> None:
+        raise NotImplementedError
+
+    def set_price(self, item, state) -> None:
+        """Prix de la fiche (majoration de la plateforme comprise) ; les autres tailles gardent leur écart."""
         raise NotImplementedError
 
     # Synchro

@@ -105,8 +105,39 @@ produits Shopify fait avancer les numéros, et un SKU déjà présent sur Shopif
   réessayée de plus en plus tard ; trois échecs déclenchent une notification. Réglages → Synchro permet de
   mettre la publication en pause.
 - **Synchro** : toutes les 3 minutes, les ventes des trois plateformes sont relevées, le stock est recopié
-  partout (une pièce unique vendue sur Etsy passe épuisée sur Shopify et eBay). Au démarrage, les ventes
-  faites pendant l'arrêt sont rattrapées avant toute publication. Notification sur le téléphone avec ntfy.
+  partout (une pièce unique vendue sur Etsy passe épuisée sur Shopify et eBay ; une bague vendue sur Shopify
+  disparaît dans toutes ses tailles). Une pièce vendue est archivée sur Shopify (récupérable, désactivable
+  dans Réglages → Connexions). Au démarrage, les ventes faites pendant l'arrêt sont rattrapées avant toute
+  publication. Notification sur le téléphone avec ntfy.
+- **Shopify fait foi** : un stock, un prix ou un prix barré changé dans l'admin Shopify, ou un produit
+  archivé, est repris dans le catalogue puis recopié sur Etsy et eBay (après deux contrôles d'affilée, pour
+  ne jamais réagir à une vente pas encore relevée).
+- **Prix et promotions** : le prix et le prix barré se changent dans la fiche ; ils partent dans la minute.
+  Les autres tailles d'une bague gardent leur écart. Etsy et eBay n'affichent pas de prix barré.
+- **Tags et filtres Shopify** : une mise à jour n'en retire jamais (collections intactes) et ne remet pas
+  ceux retirés à la main. Si une sous-catégorie change dans la fiche, l'ancien tag reste sur Shopify et une
+  alerte le signale dans l'onglet Activité.
+- **Pièce importée de Shopify** : sa fiche garde le texte de la boutique tant qu'on ne la réécrit pas
+  (« Rédiger avec l'IA » la passe au format GemZ en 4 langues, à partir des photos de la boutique).
+
+## Catalogue et ventes
+
+- **Catalogue** : mosaïque de photos ou liste (le choix est retenu), pastilles « En ligne », « À traiter »,
+  « Erreurs », « Épuisées », « Fiche à compléter », recherche (Ctrl+F) par nom, SKU, pierre ou pays, tri par
+  date, nom, prix ou stock. Un clic montre la pièce à droite (photos ◀ ▶, prix, état sur chaque plateforme
+  avec le lien de l'annonce, derniers événements) ; double-clic ou Entrée ouvre la fiche, où
+  « ◀ Précédente / Suivante ▶ » (Alt+← / Alt+→) passe d'une pièce à l'autre. Clic droit : voir l'annonce,
+  publier aussi sur Etsy ou eBay, ouvrir le dossier des photos.
+- **Fiche** : onglet Photos pour changer l'ordre, la photo principale, en retirer ou en ajouter (même
+  retouche et même logo) ; à l'enregistrement, les photos sont remplacées sur les annonces.
+- **Ventes** : totaux du jour, du mois et de l'année, vente moyenne et répartition par plateforme sur la
+  période choisie, liste des ventes avec la photo de chaque pièce (Ctrl+2).
+- **Activité** : le journal classé par jour, filtrable (erreurs, alertes, ventes, publications…), avec les
+  lignes identiques regroupées (×N) (Ctrl+3).
+- **Ventes sur le téléphone** : Réglages → Synchro et notifications → « Mes ventes sur le téléphone ».
+  Scanner le QR code avec le téléphone (même Wi-Fi que le PC), puis l'ajouter à l'écran d'accueil. La page
+  ne s'ouvre qu'avec le code secret de l'adresse et tant que GemZ Studio est ouvert. La première fois,
+  Windows demande d'autoriser GemZ Studio sur le réseau : cocher « Réseaux privés ».
 
 ## Brancher les boutiques (à faire ensemble)
 
@@ -115,10 +146,14 @@ dans settings.json.
 
 1. **Shopify** : créer une application dans le Dev Dashboard Shopify (droits produits, stock, commandes,
    traductions, publications), l'installer sur la boutique, coller l'adresse xxx.myshopify.com, l'identifiant
-   client et le secret, puis « Tester la connexion ». Ensuite Catalogue → « Importer depuis Shopify ».
+   client et le secret, puis « Tester la connexion ». Ensuite Catalogue et ventes → Outils → « Importer /
+   mettre à jour depuis Shopify ».
 2. **Etsy** : demander l'accès développeur (developers.etsy.com, application « personnelle »), puis coller
    la keystring et le shared secret, « Connecter Etsy », charger les profils d'expédition et de retour,
-   choisir les catégories. Ensuite Catalogue → « Relier les annonces Etsy » (par SKU, photo puis titre).
+   choisir les catégories. Ensuite Catalogue et ventes → Outils → « Relier les annonces Etsy » (par SKU,
+   photo puis titre).
+   Une annonce Etsy épuisée dont la pièce est encore en stock ici (vendue avant la liaison) est proposée
+   aussi : une fois reliée, la dernière pièce est retirée de Shopify.
 3. **eBay** : créer le compte vendeur et le compte développeur, une application de production avec son
    RuName, coller les identifiants, « Connecter eBay », remplir les politiques et l'emplacement.
 4. **Téléphone** : installer ntfy, s'abonner à un nom de canal secret, le coller dans Réglages → Synchro.

@@ -7,6 +7,7 @@ import re
 from ..config import ProductKind, Settings
 from ..models import ProductInfo
 from ..quickentry import strip_accents
+from . import vocab
 from .countries import country_name
 from .model import SOURCE_IA, SOURCE_MODELE, Listing, LangText
 from .prices import fmt_eur, parse_price
@@ -234,8 +235,30 @@ def default_pierres(info: ProductInfo) -> list[str]:
     return names[:4]
 
 
+def kind_forme(kind: ProductKind, info: ProductInfo) -> list[str]:
+    """Métachamp « Forme » comme dans la boutique : « brut » (minéraux), « polie », « bracelet chips »…"""
+    if kind.forme:
+        return [kind.forme]
+    if kind.form == "bracelet":
+        return [tag.replace("-", " ") for tag in info.sous_categories]
+    return []
+
+
+def default_etsy_tags(info: ProductInfo, pierres: list[str], tags: list[str] | None = None) -> list[str]:
+    fallback = [info.nom, *pierres, country_name(info.pays, "fr") if info.pays else "",
+                country_name(info.pays, "en") if info.pays else "", "pierre naturelle", "natural stone",
+                "mineral", "crystal", "gemstone", "lithotherapie", "collection", "cadeau", "gift idea",
+                "home decor", "specimen"]
+    return clean_etsy_tags(tags or [], fallback)
+
+
 def fill_texts(listing: Listing, info: ProductInfo, kind: ProductKind, settings: Settings) -> Listing:
     """(Re)calcule titres, descriptions, SEO, tags et métachamps à partir des morceaux rédigés."""
+    if listing.imported:
+        # Texte repris de Shopify : gardé tel quel (tags et métachamps de la boutique aussi), jusqu'à
+        # une réécriture par l'IA ou à la main
+        listing.ready = not listing.missing()
+        return listing
     pierres = listing.pierres or default_pierres(info)
     for lang in LANGS:
         pieces = listing.pieces.get(lang, {})
@@ -252,16 +275,13 @@ def fill_texts(listing: Listing, info: ProductInfo, kind: ProductKind, settings:
             alt=alt,
         )
     listing.tags = shopify_tags(info, kind, pierres)
+    # Orthographe déjà utilisée dans la boutique quand elle existe (filtres sans doublon)
     listing.metafields = {
-        "pierre": [tag_slug(p) for p in pierres],
-        "provenance": [tag_slug(country_name(info.pays, "fr"))] if info.pays else [],
-        "forme": list(info.sous_categories),
+        "pierre": vocab.match("pierre", [tag_slug(p) for p in pierres]),
+        "provenance": vocab.match("provenance", [tag_slug(country_name(info.pays, "fr"))] if info.pays else []),
+        "forme": vocab.match("forme", kind_forme(kind, info)),
     }
-    fallback_tags = [info.nom, *pierres, country_name(info.pays, "fr") if info.pays else "",
-                     country_name(info.pays, "en") if info.pays else "", "pierre naturelle", "natural stone",
-                     "mineral", "crystal", "gemstone", "lithotherapie", "collection", "cadeau", "gift idea",
-                     "home decor", "specimen"]
-    listing.etsy_tags = clean_etsy_tags(listing.etsy_tags, fallback_tags)
+    listing.etsy_tags = default_etsy_tags(info, pierres, listing.etsy_tags)
     listing.ready = not listing.missing()
     return listing
 
@@ -286,7 +306,10 @@ def build_listing(info: ProductInfo, kind: ProductKind, settings: Settings, ai: 
 def price_lines(info: ProductInfo, settings: Settings) -> dict[str, float]:
     """Prix de chaque plateforme pour l'affichage dans la fiche."""
     from .prices import platform_price, to_usd
-    base = parse_price(info.prix)
+    try:
+        base = parse_price(info.prix)
+    except ValueError:
+        base = 0.0
     etsy = platform_price(base, settings.etsy_markup)
     ebay = platform_price(base, settings.ebay_markup)
     return {"shopify": base, "etsy": etsy, "ebay_fr": ebay, "ebay_us_usd": to_usd(ebay, settings.usd_per_eur)}

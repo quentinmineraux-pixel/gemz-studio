@@ -218,18 +218,42 @@ class Ebay(Platform):
         state.remote_id = item.sku
         state.url = f"https://www.ebay.fr/itm/{first.get('listing', '')}" if first.get("listing") else ""
         state.price = self._price(item, "EBAY_FR")[0]
+        state.extra["media_sig"] = item.media_signature()
 
     def update(self, item: CatalogItem, state: PlatformState) -> None:
         # Même chemin que la publication : fiches d'inventaire et offres remplacées, rien n'est republié
+        signature = item.media_signature()
+        if signature and state.extra.get("media_sig") and signature != state.extra["media_sig"]:
+            state.extra["images"] = []   # photos modifiées : renvoyées, puis remplacées sur les annonces
         self.publish(item, state)
+
+    def _bulk(self, requests_: list[dict]) -> None:
+        """bulk_update_price_quantity répond 200 même si une annonce est refusée : on vérifie chacune."""
+        if not requests_:
+            return
+        r = self.call("POST", "/sell/inventory/v1/bulk_update_price_quantity", json_body={"requests": requests_})
+        failed = [resp for resp in (r.json().get("responses") or []) if int(resp.get("statusCode") or 200) >= 300]
+        if failed:
+            errors = "; ".join(e.get("longMessage") or e.get("message", "")
+                               for resp in failed for e in resp.get("errors") or [])
+            raise PlatformError(f"eBay : {errors or 'mise à jour refusée'}"[:400])
 
     def set_quantity(self, item: CatalogItem, state: PlatformState, quantity: int) -> None:
         offers = state.extra.get("offers", {})
-        requests_ = [{"sku": o["sku"], "shipToLocationAvailability": {"quantity": max(0, quantity)},
-                      "offers": [{"offerId": o["offer"], "availableQuantity": max(0, quantity)}]}
-                     for o in offers.values()]
-        if requests_:
-            self.call("POST", "/sell/inventory/v1/bulk_update_price_quantity", json_body={"requests": requests_})
+        self._bulk([{"sku": o["sku"], "shipToLocationAvailability": {"quantity": max(0, quantity)},
+                     "offers": [{"offerId": o["offer"], "availableQuantity": max(0, quantity)}]}
+                    for o in offers.values()])
+
+    def set_price(self, item: CatalogItem, state: PlatformState) -> None:
+        """Nouveau prix (majoration comprise) sur ebay.fr et ebay.com."""
+        requests_ = []
+        for market, o in state.extra.get("offers", {}).items():
+            if market in MARKETS:
+                value, currency = self._price(item, market)
+                requests_.append({"sku": o["sku"], "offers": [{"offerId": o["offer"], "price": {
+                    "value": f"{value:.2f}", "currency": currency}}]})
+        self._bulk(requests_)
+        state.price = self._price(item, "EBAY_FR")[0]
 
     def remote_quantity(self, item: CatalogItem, state: PlatformState) -> int | None:
         offers = state.extra.get("offers", {})
@@ -243,6 +267,8 @@ class Ebay(Platform):
     def sales_since(self, since: str) -> list[Sale]:
         sales: list[Sale] = []
         offset = 0
+        if "." not in since:
+            since = since.replace("Z", ".000Z")   # l'API veut les millisecondes : 2026-10-25T10:00:00.000Z
         while True:
             r = self.call("GET", "/sell/fulfillment/v1/order",
                           params={"filter": f"creationdate:[{since}..]", "limit": 200, "offset": offset})
@@ -252,9 +278,10 @@ class Ebay(Platform):
                 for line in order.get("lineItems", []):
                     cost = line.get("lineItemCost") or {}
                     sku = (line.get("sku") or "").removesuffix("-US")
+                    quantity = max(1, int(line.get("quantity", 1)))
                     sales.append(Sale(platform=self.name, order_id=order["orderId"], line_id=line["lineItemId"],
                                       sku=sku, remote_id=line.get("legacyItemId", ""),
-                                      quantity=int(line.get("quantity", 1)), price=float(cost.get("value", 0)),
+                                      quantity=quantity, price=float(cost.get("value", 0)) / quantity,  # prix unitaire
                                       currency=cost.get("currency", "EUR"), created=order.get("creationDate", ""),
                                       title=line.get("title", ""), cancelled=cancelled))
             offset += 200

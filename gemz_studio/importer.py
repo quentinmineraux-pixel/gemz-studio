@@ -10,14 +10,18 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-from .catalog import EPUISE, PUBLIE, Catalog, CatalogItem
+from .catalog import EPUISE, PLATFORMS, PUBLIE, Catalog, CatalogItem
 from .config import Settings
-from .listing.model import SOURCE_MANUEL, Listing, LangText
+from .engine import base_sku
+from .listing import vocab
+from .listing.model import SOURCE_IMPORT, SOURCE_MANUEL, Listing, LangText
+from .listing.prices import price_text
 from .models import ProductInfo
 from .platforms import RemoteListing
 from .quickentry import strip_accents
 
 ETSY_IMAGE = re.compile(r"il_(?:fullxfull|\d+x[\dN]+)\.(\d+)_([a-z0-9]+)", re.I)
+GEMZ_SKU = re.compile(r"^[A-Z]{2,}\d+")      # MFC20, VABM11, HE12… (un SKU « 10 » ne sert pas de référence)
 
 
 def norm_title(text: str) -> str:
@@ -78,7 +82,10 @@ def facts_from_shopify(title: str, html: str) -> dict:
 
 
 def info_from_remote(remote: RemoteListing, settings: Settings, kind_id: str) -> ProductInfo:
-    info = ProductInfo(nom=remote.title, prix=f"{remote.price:.2f}", quantite=max(1, remote.quantity))
+    info = ProductInfo(nom=remote.title, prix=price_text(remote.price), quantite=max(1, remote.quantity))
+    compare = float(remote.extra.get("compare_at") or 0)
+    if compare > remote.price:
+        info.prix_barre = price_text(compare)
     for key, value in facts_from_shopify(remote.title, remote.description).items():
         setattr(info, key, value)
     kind = settings.kind(kind_id)
@@ -95,29 +102,57 @@ def kind_for(product_type: str, tags: list[str], settings: Settings) -> str:
     return settings.kinds[0].id
 
 
+def shop_texts(remote: RemoteListing) -> LangText:
+    seo = remote.extra.get("seo") or {}
+    return LangText(title=remote.title, description=remote.description, seo_title=seo.get("title") or "",
+                    seo_description=seo.get("description") or "")
+
+
+def refresh_imported(item: CatalogItem, remote: RemoteListing, settings: Settings) -> None:
+    """Pièce déjà importée : textes, tags et photos repris de Shopify (modifiés dans l'admin depuis),
+    tant que la fiche n'a pas été réécrite dans GemZ ni n'attend d'envoi. Prix et stock suivent par la synchro."""
+    state = item.state("shopify")
+    if not item.photos and remote.image_urls:
+        state.extra["images"] = list(remote.image_urls)
+        state.extra["etsy_images"] = sorted(image_keys(remote.image_urls))
+    if remote.extra.get("variants"):
+        state.extra["variants"] = remote.extra["variants"]
+    if item.listing.imported and state.status in (PUBLIE, EPUISE):
+        item.listing.texts["fr"] = shop_texts(remote)
+        item.listing.tags = list(remote.tags)
+    if not item.info.poids_g:
+        # Importé par une version précédente : on complète poids, dimensions, provenance
+        facts = info_from_remote(remote, settings, item.kind_id)
+        for key in ("nom", "variete", "poids_g", "dimensions", "pays", "region", "sous_categories"):
+            if getattr(facts, key) and not (key == "nom" and item.listing.source not in (SOURCE_MANUEL, SOURCE_IMPORT)):
+                setattr(item.info, key, getattr(facts, key))
+
+
 def import_shopify(catalog: Catalog, listings: list[RemoteListing], settings: Settings) -> int:
     """Crée une fiche de catalogue pour chaque produit Shopify absent ; renvoie le nombre ajouté."""
-    known = {item.state("shopify").remote_id for item in catalog.all()}
+    items = catalog.all()
     skus = catalog.skus()
     added = 0
-    by_remote = {item.state("shopify").remote_id: item for item in catalog.all()}
+    by_remote = {item.state("shopify").remote_id: item for item in items if item.state("shopify").remote_id}
+    # Orthographes des métachamps déjà utilisées dans la boutique (Pierre, Provenance, Forme)
+    vocab.remember({key: [v for r in listings for v in (r.extra.get("metafields") or {}).get(key, [])]
+                    for key in vocab.KEYS})
     for remote in listings:
         existing = by_remote.get(remote.remote_id)
-        if existing and existing.origin == "import" and not existing.info.poids_g:
-            # Importé par une version précédente : on complète poids, dimensions, provenance
-            def refresh(it, r=remote):
-                facts = info_from_remote(r, settings, it.kind_id)
-                for key in ("nom", "variete", "poids_g", "dimensions", "pays", "region", "sous_categories"):
-                    if getattr(facts, key) and not (key == "nom" and it.listing.source != SOURCE_MANUEL):
-                        setattr(it.info, key, getattr(facts, key))
-            catalog.update(existing.sku, refresh)
-        if remote.remote_id in known or remote.extra.get("status") == "ARCHIVED":
+        if existing:
+            if existing.origin == "import":
+                before = existing.to_json()
+                refresh_imported(existing, remote, settings)
+                if existing.to_json() != before:   # n'écrit (et ne rafraîchit l'écran) que si quelque chose a changé
+                    catalog.update(existing.sku, lambda it, r=remote: refresh_imported(it, r, settings))
             continue
-        sku = (remote.skus[0] if remote.skus else "").strip().upper()
-        if not sku or sku in skus:
+        if remote.extra.get("status") == "ARCHIVED":
+            continue
+        sku = base_sku(remote.skus[0]) if remote.skus else ""
+        if not GEMZ_SKU.match(sku) or sku in skus:
             sku = f"SHOP{remote.remote_id.rsplit('/', 1)[-1]}"
-        listing = Listing(source=SOURCE_MANUEL, ready=True, tags=list(remote.tags))
-        listing.texts["fr"] = LangText(title=remote.title, description=remote.description)
+        listing = Listing(source=SOURCE_IMPORT, ready=True, tags=list(remote.tags))
+        listing.texts["fr"] = shop_texts(remote)
         kind_id = kind_for(remote.product_type, remote.tags, settings)
         item = CatalogItem(sku=sku, kind_id=kind_id, info=info_from_remote(remote, settings, kind_id),
                            listing=listing, stock=remote.quantity, origin="import")
@@ -153,12 +188,21 @@ class Match:
     score: float
 
     @property
+    def sold(self) -> bool:
+        """Annonce épuisée sur Etsy : la pièce y a été vendue (peut-être avant que GemZ ne surveille)."""
+        return self.etsy.extra.get("state") == "sold_out"
+
+    @property
     def sure(self) -> bool:
-        return self.method in ("sku", "photo") or (self.method == "titre" and self.score >= 0.9)
+        return self.method in ("sku", "photo") or (self.method == "titre" and self.score >= 0.9 and not self.sold)
 
 
 def match_etsy(catalog: Catalog, etsy_listings: list[RemoteListing]) -> list[Match]:
-    """Propose un produit du catalogue pour chaque annonce Etsy (par SKU, photo, puis titre)."""
+    """Propose un produit du catalogue pour chaque annonce Etsy (par SKU, photo, puis titre).
+
+    Les annonces épuisées (pièce vendue sur Etsy) ne sont proposées que si elles correspondent sûrement
+    (SKU ou photo) à une pièce encore en stock dans le catalogue : vendue avant la liaison, elle est
+    peut-être encore en vente sur Shopify."""
     items = [i for i in catalog.all() if not i.state("etsy").remote_id]
     by_sku = {i.sku: i for i in items}
     by_image: dict[str, CatalogItem] = {}
@@ -168,20 +212,30 @@ def match_etsy(catalog: Catalog, etsy_listings: list[RemoteListing]) -> list[Mat
     titles = {norm_title(i.title): i for i in items}
     already = {i.state("etsy").remote_id for i in catalog.all() if i.state("etsy").remote_id}
     out: list[Match] = []
-    for listing in etsy_listings:
+    active_items: set[str] = set()
+    # Annonces actives d'abord : une pièce remise en vente garde sa nouvelle annonce plutôt que l'ancienne
+    ordered = sorted(etsy_listings, key=lambda r: r.extra.get("state") == "sold_out")
+    for listing in ordered:
         if listing.remote_id in already:
             continue
         found = next((by_sku[s.upper()] for s in listing.skus if s.upper() in by_sku), None)
-        if found:
-            out.append(Match(listing, found, "sku", 1.0))
+        method = "sku" if found else ""
+        if not found:
+            found = next((by_image[k] for k in image_keys(listing.image_urls) if k in by_image), None)
+            method = "photo" if found else ""
+        if listing.extra.get("state") == "sold_out":
+            if found and found.stock > 0 and found.sku not in active_items:
+                active_items.add(found.sku)   # une seule ancienne annonce par pièce
+                out.append(Match(listing, found, method, 1.0))
             continue
-        found = next((by_image[k] for k in image_keys(listing.image_urls) if k in by_image), None)
         if found:
-            out.append(Match(listing, found, "photo", 1.0))
+            active_items.add(found.sku)
+            out.append(Match(listing, found, method, 1.0))
             continue
         best = difflib.get_close_matches(norm_title(listing.title), list(titles), n=1, cutoff=0.6)
         if best:
             score = difflib.SequenceMatcher(None, norm_title(listing.title), best[0]).ratio()
+            active_items.add(titles[best[0]].sku)
             out.append(Match(listing, titles[best[0]], "titre", score))
         else:
             out.append(Match(listing, None, "aucune", 0.0))
@@ -191,15 +245,32 @@ def match_etsy(catalog: Catalog, etsy_listings: list[RemoteListing]) -> list[Mat
 def link_etsy(catalog: Catalog, match: Match) -> None:
     if match.item is None:
         return
+    sold_here: list[bool] = []
 
     def apply(item: CatalogItem):
+        sold_here.clear()
         state = item.state("etsy")
         state.wanted, state.remote_id, state.url, state.price = True, match.etsy.remote_id, match.etsy.url, match.etsy.price
+        if match.sold and item.stock <= 1:
+            # Dernière pièce vendue sur Etsy avant la liaison : retirée de Shopify et des autres plateformes
+            item.stock = 0
+            for name in PLATFORMS:
+                st = item.state(name)
+                if st.remote_id:
+                    st.status = EPUISE
+                    if name != "etsy":
+                        st.extra["stock_a_envoyer"] = True
+            sold_here.append(True)
+            return
         state.status = PUBLIE if item.stock > 0 else EPUISE
-        if item.stock == 0:
-            state.extra["stock_a_envoyer"] = True   # vendu sur Shopify entre-temps : l'annonce Etsy sera désactivée
+        if item.stock == 0 or match.sold:
+            # Vendu sur Shopify entre-temps : l'annonce Etsy sera désactivée ; annonce épuisée sur Etsy alors
+            # qu'il reste du stock : remise en vente avec ce stock
+            state.extra["stock_a_envoyer"] = True
     catalog.update(match.item.sku, apply)
     catalog.log("info", f"Annonce Etsy reliée ({match.method})", match.item.sku, "etsy", {"etsy": match.etsy.remote_id})
+    if sold_here:
+        catalog.log("synchro", "Déjà vendue sur Etsy (annonce épuisée) : retirée de la vente partout", match.item.sku, "etsy")
 
 
 def adopt_etsy_defaults(catalog: Catalog, etsy_listings: list[RemoteListing], settings: Settings) -> list[str]:

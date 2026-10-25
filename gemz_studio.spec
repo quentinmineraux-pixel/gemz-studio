@@ -9,7 +9,7 @@ if os.path.exists("dist/gemz-canon32.exe"):
 a = Analysis(
     ["run.py"],
     datas=datas,
-    hiddenimports=["anthropic", "requests", "certifi"],
+    hiddenimports=["anthropic", "requests", "certifi", "qrcode", "qrcode.image.pil"],
     excludes=["tkinter"],
 )
 pyz = PYZ(a.pure)

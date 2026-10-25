@@ -5,6 +5,7 @@ publication et la synchro du stock, qui tournent dans des threads différents.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -67,6 +68,34 @@ class CatalogItem:
     def state(self, platform: str) -> PlatformState:
         return self.platforms.setdefault(platform, PlatformState())
 
+    def media_signature(self) -> str:
+        """Empreinte des photos et vidéos (contenu et ordre) : elle change quand on les modifie."""
+        if not (self.photos or self.videos):
+            return ""
+        digest = hashlib.sha1()
+        for path in self.photos + self.videos:
+            p = Path(path)
+            try:
+                with p.open("rb") as f:
+                    # Vidéo : taille et début du fichier suffisent (et évitent de relire 50 Mo)
+                    content = f.read(1 << 20) if p.suffix.lower() in (".mp4", ".mov") else f.read()
+                size = p.stat().st_size
+            except OSError:
+                content, size = b"", 0
+            digest.update(f"{p.name}|{size}|".encode() + hashlib.sha1(content).digest())
+        return digest.hexdigest()
+
+    @property
+    def thumbnail_source(self) -> str:
+        """Photo principale : fichier local, sinon photo de la boutique (pièce importée)."""
+        if self.photos:
+            return self.photos[0]
+        images = self.state("shopify").extra.get("images") or []
+        return images[0] if images else ""
+
+    def all_images(self) -> list[str]:
+        return list(self.photos) or list(self.state("shopify").extra.get("images") or [])
+
     def to_json(self) -> str:
         raw = asdict(self)
         raw["listing"] = self.listing.to_dict()
@@ -91,7 +120,7 @@ class CatalogItem:
 class Event:
     id: int
     ts: str
-    kind: str          # vente, publication, erreur, synchro, info
+    kind: str          # vente, publication, erreur, alerte, synchro, info
     sku: str
     platform: str
     message: str
@@ -181,12 +210,17 @@ class Catalog:
             self._db.commit()
         self._changed(sku)
 
-    def events(self, kinds: tuple[str, ...] | None = None, limit: int = 300) -> list[Event]:
+    def events(self, kinds: tuple[str, ...] | None = None, limit: int = 300, sku: str = "") -> list[Event]:
         query = "SELECT id, ts, kind, sku, platform, message, data FROM events"
-        args: list = []
+        where, args = [], []
         if kinds:
-            query += f" WHERE kind IN ({','.join('?' * len(kinds))})"
+            where.append(f"kind IN ({','.join('?' * len(kinds))})")
             args += list(kinds)
+        if sku:
+            where.append("sku = ?")
+            args.append(sku)
+        if where:
+            query += " WHERE " + " AND ".join(where)
         query += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         with self._lock:

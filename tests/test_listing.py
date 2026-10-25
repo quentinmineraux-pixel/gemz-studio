@@ -1,6 +1,8 @@
+from gemz_studio.catalog import CatalogItem
 from gemz_studio.config import Settings
-from gemz_studio.listing.builder import build_listing, clean_etsy_tags, safe_text, tag_slug
-from gemz_studio.listing.model import Listing
+from gemz_studio.listing import vocab
+from gemz_studio.listing.builder import build_listing, clean_etsy_tags, fill_texts, kind_forme, safe_text, tag_slug
+from gemz_studio.listing.model import SOURCE_IMPORT, Listing
 from gemz_studio.listing.prices import parse_price, platform_price, round_90, to_usd
 from gemz_studio.models import ProductInfo
 
@@ -44,7 +46,7 @@ def test_fiche_au_format_de_la_boutique():
     assert en.title == "Vanadinite on baryte fan-shaped – Mibladen, Morocco – 47 g"
     assert "<strong>Weight:</strong> 47 g" in en.description and "6 × 3.5 × 2 cm" in en.description
     assert listing.tags == ["cristal", "vanadinite", "baryte", "maroc"]
-    assert listing.metafields == {"pierre": ["vanadinite", "baryte"], "provenance": ["maroc"], "forme": ["cristal"]}
+    assert listing.metafields == {"pierre": ["vanadinite", "baryte"], "provenance": ["maroc"], "forme": ["brut"]}  # comme dans la boutique
     assert len(listing.etsy_tags) == 13 and all(len(t) <= 20 for t in listing.etsy_tags)
     assert listing.etsy_tags[:2] == ["vanadinite", "mineral specimen"]
     assert listing.ready
@@ -78,3 +80,50 @@ def test_outils_texte():
     assert tag_slug("Afrique du Sud") == "afrique-du-sud"
     assert safe_text("a <b>b</b> <strong>c</strong>") == "a &lt;b&gt;b&lt;/b&gt; <strong>c</strong>"
     assert clean_etsy_tags(["Pierre ★ naturelle"], []) == ["pierre naturelle"]
+
+
+def test_forme_comme_dans_la_boutique():
+    s = Settings()
+    assert kind_forme(s.kind("mineral-collection"), ProductInfo()) == ["brut"]
+    assert kind_forme(s.kind("pierre-polie"), ProductInfo()) == ["polie"]
+    assert kind_forme(s.kind("bracelet"), ProductInfo(sous_categories=["bracelet-chips"])) == ["bracelet chips"]
+    assert kind_forme(s.kind("bague"), ProductInfo()) == []
+
+
+def test_orthographe_de_la_boutique_reprise():
+    assert not vocab.is_new("provenance", "maroc")    # rien d'importé : aucune valeur signalée
+    vocab.remember({"provenance": ["afrique du sud", "Maroc"], "pierre": ["quartz rose"]})
+    assert vocab.match("provenance", ["afrique-du-sud", "maroc", "pérou"]) == ["afrique du sud", "Maroc", "pérou"]
+    assert vocab.is_new("provenance", "pérou") and not vocab.is_new("provenance", "Afrique-du-Sud")
+    vocab.remember({"provenance": ["Afrique du sud"]})   # même valeur, autre écriture : pas de doublon
+    assert vocab.load()["provenance"] == ["afrique du sud", "Maroc"]
+    s = Settings()
+    info = ProductInfo(nom="quartz rose", pays="afrique du sud", prix="20")
+    listing = build_listing(info, s.kind("mineral-collection"), s)
+    assert listing.metafields["provenance"] == ["afrique du sud"] and listing.metafields["pierre"] == ["quartz rose"]
+
+
+def test_fiche_importee_gardee_telle_quelle():
+    s = Settings()
+    listing = Listing(source=SOURCE_IMPORT, tags=["cristal", "promo"], metafields={"forme": ["brut"]})
+    listing.texts["fr"].title = "Titre de la boutique"
+    listing.texts["fr"].description = "<p>Texte de la boutique</p>"
+    fill_texts(listing, ProductInfo(nom="autre nom", prix="10"), s.kind("mineral-collection"), s)
+    assert listing.texts["fr"].title == "Titre de la boutique" and listing.tags == ["cristal", "promo"]
+    assert listing.metafields == {"forme": ["brut"]} and listing.ready
+    assert Listing.from_dict(listing.to_dict()).imported
+
+
+def test_empreinte_des_photos_suit_l_ordre(tmp_path):
+    a, b = tmp_path / "a.jpg", tmp_path / "b.jpg"
+    a.write_bytes(b"photo a")
+    b.write_bytes(b"photo b")
+    item = CatalogItem(sku="MFC1", kind_id="mineral-collection", photos=[str(a), str(b)])
+    first = item.media_signature()
+    assert first and first == item.media_signature()
+    item.photos = [str(b), str(a)]
+    assert item.media_signature() != first
+    item.photos = [str(a), str(b)]
+    a.write_bytes(b"photo a retouchee")
+    assert item.media_signature() != first
+    assert CatalogItem(sku="BAG1", kind_id="bague").media_signature() == ""

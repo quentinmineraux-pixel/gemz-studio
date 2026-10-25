@@ -3,6 +3,7 @@ from __future__ import annotations
 
 LANGS = ("fr", "en", "es", "de")
 LANG_LABELS = {"fr": "Français", "en": "English", "es": "Español", "de": "Deutsch"}
+LANG_NAMES = {"fr": "français", "en": "anglais", "es": "espagnol", "de": "allemand"}   # dans les messages
 
 FIXED: dict[str, dict[str, str]] = {
     "poids": {"fr": "Poids", "en": "Weight", "es": "Peso", "de": "Gewicht"},

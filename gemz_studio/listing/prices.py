@@ -14,6 +14,20 @@ def parse_price(text: str | float | int) -> float:
     return float(match.group().replace(",", "."))
 
 
+def safe_price(text: str | float | int) -> float:
+    """Comme parse_price, mais 0 si le prix est vide ou illisible."""
+    try:
+        return parse_price(text)
+    except ValueError:
+        return 0.0
+
+
+def price_text(value: float) -> str:
+    """Prix tel qu'on le saisit dans la fiche : 67 -> « 67 », 67.5 -> « 67,50 »."""
+    text = f"{value:.2f}"
+    return text[:-3] if text.endswith(".00") else text.replace(".", ",")
+
+
 def round_90(value: float) -> float:
     """Arrondi vers le haut à une terminaison en ,90 : 188,60 -> 188,90 ; 188,95 -> 189,90."""
     cents = round(value * 100)

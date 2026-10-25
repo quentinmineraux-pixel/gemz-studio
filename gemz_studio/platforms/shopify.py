@@ -16,8 +16,10 @@ from pathlib import Path
 
 from .. import vault
 from ..catalog import CatalogItem, PlatformState
+from ..listing import vocab
 from ..listing.prices import parse_price
 from ..listing.texts import LANGS
+from ..quickentry import strip_accents
 from .base import NotConfigured, Platform, PlatformError, RemoteListing, Sale, USER_AGENT, request
 
 API_VERSION = "2026-07"
@@ -27,6 +29,7 @@ SECRET_CLIENT_ID = "shopify_client_id"
 SECRET_CLIENT_SECRET = "shopify_client_secret"
 RING_OPTION = "Taille"
 BRACELET_OPTION = "Tour de poignet"
+COLOR_KEY = "color-pattern"   # champ « Couleur » de Shopify (filtres de la boutique)
 
 PRODUCT_SET = """
 mutation GemzProductSet($identifier: ProductSetIdentifiers, $input: ProductSetInput!) {
@@ -54,12 +57,23 @@ mutation GemzPublish($id: ID!, $input: [PublicationInput!]!) {
 
 PRODUCT_CURRENT = """
 query GemzCurrent($id: ID!) {
-  product(id: $id) { tags status metafields(first: 20, namespace: "custom") { nodes { key value type } } }
+  product(id: $id) {
+    tags status
+    metafields(first: 20, namespace: "custom") { nodes { key value type } }
+    color: metafield(namespace: "shopify", key: "color-pattern") { value }
+    media(first: 50) { nodes { id } }
+    variants(first: 100) { nodes { id sku price compareAtPrice } }
+  }
 }"""
 
 PRODUCT_UPDATE = """
-mutation GemzUpdate($product: ProductUpdateInput!) {
-  productUpdate(product: $product) { product { id } userErrors { field message } }
+mutation GemzUpdate($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
+  productUpdate(product: $product, media: $media) { product { id } userErrors { field message } }
+}"""
+
+DETACH_MEDIA = """
+mutation GemzDetachMedia($files: [FileUpdateInput!]!) {
+  fileUpdate(files: $files) { userErrors { field message } }
 }"""
 
 VARIANTS_PRICE = """
@@ -90,13 +104,25 @@ query GemzShopSetup {
   shopLocales { locale published }
 }"""
 
+COLORS = """
+query GemzColors { metaobjects(type: "shopify--color-pattern", first: 100) { nodes { id handle displayName } } }
+"""
+
 INVENTORY = """
 query GemzInventory($id: ID!) {
   product(id: $id) {
     status
     variants(first: 100) {
-      nodes { id sku inventoryItem { id inventoryLevels(first: 5) { nodes { location { id } quantities(names: ["available"]) { name quantity } } } } }
+      nodes { id sku inventoryItem { id inventoryLevels(first: 3) { nodes { location { id } quantities(names: ["available"]) { name quantity } } } } }
     }
+  }
+}"""
+
+SNAPSHOT = """
+query GemzSnapshot($after: String) {
+  productVariants(first: 250, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { sku price compareAtPrice inventoryQuantity product { id status } }
   }
 }"""
 
@@ -127,7 +153,9 @@ query GemzProducts($after: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id title handle productType tags status totalInventory onlineStoreUrl descriptionHtml
-      variants(first: 100) { nodes { id sku price inventoryQuantity inventoryItem { id } } }
+      seo { title description }
+      metafields(first: 10, namespace: "custom") { nodes { key value } }
+      variants(first: 100) { nodes { id sku price compareAtPrice inventoryItem { id } } }
       media(first: 10) { nodes { ... on MediaImage { image { url } } } }
     }
   }
@@ -136,6 +164,164 @@ query GemzProducts($after: String) {
 # Clés Shopify des champs traduits
 TRANSLATION_KEYS = {"title": "title", "body_html": "description", "meta_title": "seo_title",
                     "meta_description": "seo_description"}
+
+# Entrées du champ « Couleur » de la boutique (par leur poignée) et mots que l'IA peut employer
+COLOR_WORDS = {
+    "vert": "vert verte verts vertes verdatre emeraude olive kaki menthe jade",
+    "bleu": "bleu bleue bleus bleues bleute bleutee azur cyan indigo marine turquoise saphir",
+    "rouge": "rouge rouges bordeaux carmin cerise rubis vermillon grenat sang",
+    "orange": "orange oranges orangee orangees cuivre cuivree corail abricot mandarine",
+    "jaune": "jaune jaunes dore doree or ocre moutarde citron miel ambre",
+    "rose": "rose roses rosee fuchsia saumon magenta framboise",
+    "violet": "violet violette violets violacee mauve lavande lilas pourpre prune amethyste",
+    "marron": "marron brun brune bruns brunes chocolat caramel bronze fauve havane chatain acajou cognac",
+    "beige": "beige creme ivoire sable ecru champagne",
+    "blanc": "blanc blanche blancs blanches laiteux laiteuse nacre nacree",
+    "noir": "noir noire noirs noires anthracite",
+    "gris": "gris grise argent argente argentee metallique acier plomb",
+    "clair": "clair claire transparent transparente incolore translucide cristallin limpide",
+    "multicolore": "multicolore multicolores irise irisee arcenciel chatoyant",
+    "orrose": "orrose",
+}
+_COLOR_ALIASES = {word: handle for handle, words in COLOR_WORDS.items() for word in words.split()}
+# Entrées « Couleur » de la boutique GemZ (secours si l'application n'a pas le droit de les lire)
+GEMZ_DOMAIN = "p6cqtd-c1.myshopify.com"
+GEMZ_COLORS = {
+    "vert": "291670851923", "clair": "291694215507", "blanc": "291695034707", "bleu": "291695329619",
+    "orange": "291695493459", "rouge": "291695984979", "beige": "291700375891", "orrose": "291700932947",
+    "violet": "291701522771", "rose": "291876929875", "noir": "291878240595", "gris": "291878928723",
+    "marron": "291879977299", "jaune": "291880010067", "multicolore": "298331439443",
+}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z]", "", strip_accents(text).lower())
+
+
+def _list_value(raw: str) -> list[str]:
+    """Valeur d'un métachamp liste (« ["a","b"] ») ou simple."""
+    try:
+        value = json.loads(raw) if str(raw).startswith("[") else [raw]
+    except ValueError:
+        return []
+    return [str(v) for v in value if str(v).strip()]
+
+
+def _sent_values(fields: dict) -> dict[str, list[str]]:
+    """Tags, filtres et couleurs que GemZ envoie : la prochaine mise à jour ne retirera que ceux-là."""
+    out = {"tags": list(fields["tags"])}
+    for m in fields["metafields"]:
+        out[m["key"]] = json.loads(m["value"])
+    return out
+
+
+def color_refs(couleurs: list[str], palette: dict[str, str]) -> list[str]:
+    """Couleurs de l'IA (« vert foncé », « bleu-vert »…) -> entrées existantes du champ Couleur (3 au plus).
+
+    palette : {poignée sans accent ni tiret: identifiant}. Aucune entrée n'est créée."""
+    out: list[str] = []
+    for couleur in couleurs:
+        whole = _norm(couleur)
+        words = [_norm(w) for w in re.split(r"[\s/,-]+", couleur) if _norm(w)]
+        for word in ([whole] if palette.get(_COLOR_ALIASES.get(whole, whole)) else words):
+            ref = palette.get(_COLOR_ALIASES.get(word, word))
+            if ref and ref not in out:
+                out.append(ref)
+    return out[:3]
+
+
+def plan_quantities(levels: list[tuple[str, str, int]], quantity: int, spread: bool) -> dict[str, tuple[int, int]]:
+    """Nouvelles quantités par article d'inventaire : {article: (avant, après)}.
+
+    spread=False (pièce créée par GemZ, ou une seule variante) : chaque variante prend la quantité
+    (une bague unique vendue disparaît dans toutes les tailles).
+    spread=True (produit importé à plusieurs variantes, stock par taille géré dans Shopify) : la
+    quantité est le total ; on retire des unités à la taille la mieux fournie, sans toucher aux autres.
+    """
+    quantity = max(0, quantity)
+    current = {inv: max(0, q) for _sku, inv, q in levels}
+    if not spread:
+        target = {inv: quantity for inv in current}
+    elif quantity == 0:
+        target = {inv: 0 for inv in current}
+    else:
+        target = dict(current)
+        total = sum(target.values())
+        while total > quantity:
+            inv = max(target, key=target.get)
+            target[inv] -= 1
+            total -= 1
+        if total < quantity and levels:
+            target[levels[0][1]] += quantity - total
+    return {inv: (current[inv], q) for inv, q in target.items() if q != current[inv]}
+
+
+def variant_prices(variants: list[dict], new_base: float, old_base: float, compare: float | None) -> list[dict]:
+    """Nouveau prix de chaque variante : l'écart avec le prix de base est gardé (+12 € des autres tailles
+    d'une bague, perles plus grosses…). Le prix barré suit le même écart (aucun = fin de la promotion)."""
+    out = []
+    for v in variants:
+        current = float(v.get("price") or 0)
+        price = max(0.0, round(new_base + current - old_base, 2))
+        entry = {"id": v["id"], "price": f"{price:.2f}",
+                 "compareAtPrice": f"{compare + price - new_base:.2f}" if compare else None}
+        old_compare = f"{float(v['compareAtPrice']):.2f}" if v.get("compareAtPrice") else None
+        if entry["price"] != f"{current:.2f}" or entry["compareAtPrice"] != old_compare:
+            out.append(entry)
+    return out
+
+
+def main_variant(variants: list[dict], sku: str) -> dict | None:
+    """Variante de référence : celle du SKU de la pièce, sinon la moins chère."""
+    for v in variants:
+        if sku and (v.get("sku") or "").upper() == sku.upper():
+            return v
+    priced = [v for v in variants if v.get("price") not in (None, "")]
+    return min(priced, key=lambda v: float(v["price"])) if priced else None
+
+
+def _key(value) -> str:
+    return str(value).strip().casefold()
+
+
+def merge_values(current: list[str], ours: list[str], last_sent: list[str] | None) -> list[str]:
+    """Liste à renvoyer à Shopify (tags, filtres, couleurs) : rien de ce qui y est n'est jamais retiré
+    (collections intactes) ; les nouvelles valeurs de la fiche sont ajoutées, sauf celles que GemZ avait
+    déjà envoyées et qu'on a retirées à la main dans Shopify.
+    last_sent : ce que GemZ a envoyé la dernière fois (None = inconnu)."""
+    there, sent = {_key(v) for v in current}, {_key(v) for v in last_sent or []}
+    out = list(current)
+    for value in ours:
+        if _key(value) not in there and _key(value) not in sent:
+            out.append(value)
+            there.add(_key(value))
+    return out
+
+
+def left_behind(current: list[str], ours: list[str], last_sent: list[str] | None) -> list[str]:
+    """Valeurs que GemZ avait mises, qui ne sont plus dans la fiche mais restent dans Shopify."""
+    mine, sent = {_key(v) for v in ours}, {_key(v) for v in last_sent or []}
+    return [v for v in current if _key(v) in sent and _key(v) not in mine]
+
+
+def spread_stock(item: CatalogItem, state: PlatformState) -> bool:
+    """Produit importé à plusieurs variantes : le stock du catalogue est le total de ses tailles."""
+    return item.origin == "import" and len(state.extra.get("variants", {})) > 1
+
+
+def reference_sku(item: CatalogItem) -> str:
+    """Variante dont le prix est celui de la fiche : la taille réelle d'une pièce GemZ ; pour un produit
+    importé, la moins chère (comme à l'import)."""
+    return "" if item.origin == "import" else item.sku
+
+
+def remote_stock(variants: list[dict], sku: str, spread: bool) -> int:
+    """Stock d'un produit Shopify au sens du catalogue (voir plan_quantities)."""
+    quantities = [max(0, int(v.get("quantity") or 0)) for v in variants]
+    if spread:
+        return sum(quantities)
+    main = [max(0, int(v.get("quantity") or 0)) for v in variants if (v.get("sku") or "").upper() == sku.upper()]
+    return main[0] if main else max(quantities, default=0)
 
 
 class Shopify(Platform):
@@ -147,6 +333,7 @@ class Shopify(Platform):
         self._token = ""
         self._token_expires = 0.0
         self._setup: dict | None = None
+        self._palette: dict[str, str] | None = None
         self._lock = threading.Lock()
         self._session = None
 
@@ -245,6 +432,20 @@ class Shopify(Platform):
             raise PlatformError("Aucun entrepôt (emplacement) dans la boutique Shopify.")
         return locations[0]["id"]
 
+    def palette(self) -> dict[str, str]:
+        """Entrées du champ « Couleur » de la boutique : {poignée: identifiant}."""
+        if self._palette is None:
+            try:
+                self._palette = {}
+                for node in self.graphql(COLORS)["metaobjects"]["nodes"]:
+                    self._palette[_norm(node["handle"])] = node["id"]
+                    self._palette.setdefault(_norm(node.get("displayName") or ""), node["id"])
+            except PlatformError:
+                # Droit de lecture des « métaobjets » absent : entrées connues de la boutique GemZ
+                self._palette = ({h: f"gid://shopify/Metaobject/{i}" for h, i in GEMZ_COLORS.items()}
+                                 if self.domain == GEMZ_DOMAIN else {})
+        return self._palette
+
     # --- médias --------------------------------------------------------------
     def upload(self, path: str) -> str:
         """Envoie un fichier local vers Shopify ; renvoie l'adresse à donner comme originalSource."""
@@ -265,16 +466,33 @@ class Shopify(Platform):
             raise PlatformError(f"Envoi de {p.name} vers Shopify refusé ({r.status_code}).", retryable=True)
         return target["resourceUrl"]
 
+    def _media_inputs(self, item: CatalogItem, state: PlatformState) -> list[dict]:
+        """Photos puis vidéo envoyées vers Shopify (reprise après coupure : rien n'est renvoyé deux fois)."""
+        alt = item.listing.texts["fr"].alt
+        uploaded = state.extra.setdefault("uploaded", {})
+        out = []
+        for path in item.photos + item.videos:
+            if path not in uploaded:
+                uploaded[path] = self.upload(path)
+            is_video = Path(path).suffix.lower() in (".mp4", ".mov")
+            out.append({"originalSource": uploaded[path], "contentType": "VIDEO" if is_video else "IMAGE",
+                        "alt": alt})
+        return out
+
     # --- produit -------------------------------------------------------------
     def _variants(self, item: CatalogItem, kind_form: str) -> tuple[list[dict], list[dict]]:
         base = parse_price(item.info.prix)
+        compare = parse_price(item.info.prix_barre) if item.info.prix_barre.strip() else 0.0
         stock = max(0, item.stock)
         location = self.location_id()
 
         def variant(option: str, value: str, price: float, sku: str) -> dict:
-            return {"optionValues": [{"optionName": option, "name": value}], "price": f"{price:.2f}", "sku": sku,
-                    "inventoryItem": {"tracked": True, "sku": sku}, "inventoryPolicy": "DENY",
-                    "inventoryQuantities": [{"locationId": location, "name": "available", "quantity": stock}]}
+            out = {"optionValues": [{"optionName": option, "name": value}], "price": f"{price:.2f}", "sku": sku,
+                   "inventoryItem": {"tracked": True, "sku": sku}, "inventoryPolicy": "DENY",
+                   "inventoryQuantities": [{"locationId": location, "name": "available", "quantity": stock}]}
+            if compare > base:
+                out["compareAtPrice"] = f"{compare + price - base:.2f}"
+            return out
 
         if kind_form == "bague" and item.info.taille_reelle.strip().isdigit():
             real = int(item.info.taille_reelle)
@@ -294,14 +512,23 @@ class Shopify(Platform):
         options = [{"name": "Title", "values": [{"name": "Default Title"}]}]
         return options, [variant("Title", "Default Title", base, item.sku)]
 
+    def _metafields(self, item: CatalogItem) -> list[dict]:
+        out = [{"namespace": "custom", "key": key, "type": "list.single_line_text_field",
+                "value": json.dumps(values, ensure_ascii=False)}
+               for key, values in item.listing.metafields.items() if values]
+        colors = color_refs(item.listing.couleurs, self.palette()) if item.listing.couleurs else []
+        if colors:
+            out.append({"namespace": "shopify", "key": COLOR_KEY, "type": "list.metaobject_reference",
+                        "value": json.dumps(colors)})
+        return out
+
     def _product_fields(self, item: CatalogItem, kind) -> dict:
         fr = item.listing.texts["fr"]
-        metafields = [{"namespace": "custom", "key": key, "type": "list.single_line_text_field",
-                       "value": json.dumps(values, ensure_ascii=False)}
-                      for key, values in item.listing.metafields.items() if values]
-        return {"title": fr.title, "descriptionHtml": fr.description, "productType": kind.shopify_type,
-                "vendor": VENDOR, "tags": item.listing.tags,
-                "seo": {"title": fr.seo_title, "description": fr.seo_description}, "metafields": metafields}
+        fields = {"title": fr.title, "descriptionHtml": fr.description, "productType": kind.shopify_type,
+                  "vendor": VENDOR, "tags": item.listing.tags, "metafields": self._metafields(item)}
+        if fr.seo_title or fr.seo_description:   # vide : on ne remplace pas le référencement existant
+            fields["seo"] = {"title": fr.seo_title, "description": fr.seo_description}
+        return fields
 
     def publish(self, item: CatalogItem, state: PlatformState) -> None:
         if not state.remote_id and not state.extra.get("uploaded"):
@@ -314,17 +541,10 @@ class Shopify(Platform):
         kind = self.settings.kind(item.kind_id)
         fields = self._product_fields(item, kind)
         options, variants = self._variants(item, kind.form)
-        alt = item.listing.texts["fr"].alt
-        uploaded = state.extra.setdefault("uploaded", {})   # reprise après coupure : rien n'est renvoyé deux fois
-        files = []
-        for path in item.photos + item.videos:
-            if path not in uploaded:
-                uploaded[path] = self.upload(path)
-            is_video = Path(path).suffix.lower() in (".mp4", ".mov")
-            files.append({"originalSource": uploaded[path], "contentType": "VIDEO" if is_video else "IMAGE",
-                          "alt": alt})
         product_input = {**fields, "status": "ACTIVE", "productOptions": options, "variants": variants,
-                         "files": files}
+                         "files": self._media_inputs(item, state)}
+        if kind.shopify_category:
+            product_input["category"] = kind.shopify_category
         identifier = {"id": state.remote_id} if state.remote_id else None
         data = self.graphql(PRODUCT_SET, {"identifier": identifier, "input": product_input})
         payload = data["productSet"]
@@ -333,9 +553,14 @@ class Shopify(Platform):
         state.remote_id = product["id"]
         state.extra["variants"] = {v["sku"]: {"id": v["id"], "inventory_item": v["inventoryItem"]["id"]}
                                    for v in product["variants"]["nodes"]}
+        state.extra["media_sig"] = item.media_signature()
+        state.extra["envoye"] = _sent_values(fields)
         state.url = product.get("onlineStoreUrl") or f"{self.setup()['shop']['primaryDomain']['url']}/products/{product['handle']}"
         state.price = parse_price(item.info.prix)
+        vocab.remember(item.listing.metafields)
+        state.extra["canaux"] = False
         self._publish_channels(product["id"])
+        state.extra["canaux"] = True
         self._translate(item, product["id"])
 
     def _publish_channels(self, product_id: str) -> None:
@@ -369,35 +594,83 @@ class Shopify(Platform):
             self._user_errors(data["translationsRegister"], "traductions")
 
     def update(self, item: CatalogItem, state: PlatformState) -> None:
-        """Textes, tags, métachamps et prix ; les photos ne sont pas renvoyées."""
+        """Textes, tags, métachamps et photos (si elles ont changé) ; les prix passent par set_price."""
         if not state.remote_id:
             return self.publish(item, state)
         kind = self.settings.kind(item.kind_id)
         fields = self._product_fields(item, kind)
-        # On ne retire jamais rien : tags et métachamps déjà présents (collections, forme…) sont gardés
-        current = self.graphql(PRODUCT_CURRENT, {"id": state.remote_id})["product"] or {}
-        tags = list(current.get("tags") or [])
-        tags += [t for t in fields["tags"] if t not in tags]
-        sent = {m["key"] for m in fields["metafields"]}
-        metafields = fields["metafields"] + [
-            {"namespace": "custom", "key": m["key"], "type": m["type"], "value": m["value"]}
-            for m in (current.get("metafields") or {}).get("nodes", []) if m["key"] not in sent]
-        data = self.graphql(PRODUCT_UPDATE, {"product": {
-            "id": state.remote_id, "title": fields["title"], "descriptionHtml": fields["descriptionHtml"],
-            "seo": fields["seo"], "tags": tags, "metafields": metafields}})
+        current = self.graphql(PRODUCT_CURRENT, {"id": state.remote_id})["product"]
+        if current is None:
+            raise PlatformError("Produit introuvable sur Shopify (supprimé ?).")
+        # Tags (collections), filtres et couleurs : jamais rien de retiré, et ce qui a été retiré à la main
+        # dans Shopify n'est pas remis
+        last = state.extra.get("envoye") or {}
+        there = {m["key"]: _list_value(m["value"]) for m in (current.get("metafields") or {}).get("nodes", [])}
+        there[COLOR_KEY] = _list_value((current.get("color") or {}).get("value") or "[]")
+        tags = merge_values(current.get("tags") or [], fields["tags"], last.get("tags"))
+        old_tags = left_behind(current.get("tags") or [], fields["tags"], last.get("tags"))
+        if old_tags:
+            # Sous-catégorie changée dans la fiche : l'ancien tag reste (GemZ n'en retire jamais), à voir
+            note = (f"tag{'s' if len(old_tags) > 1 else ''} {', '.join(old_tags)} plus dans la fiche mais gardé"
+                    f"{'s' if len(old_tags) > 1 else ''} sur Shopify : retire-le dans Shopify si la pièce ne doit plus "
+                    "être dans cette collection")
+            previous = state.extra.get("avertissement", "")
+            state.extra["avertissement"] = f"{previous} · {note}" if previous else note
+        metafields = [{**m, "value": json.dumps(merge_values(there.get(m["key"], []), json.loads(m["value"]),
+                                                             last.get(m["key"])), ensure_ascii=False)}
+                      for m in fields["metafields"]]
+        product = {"id": state.remote_id, "title": fields["title"], "descriptionHtml": fields["descriptionHtml"],
+                   "tags": tags, "metafields": metafields}
+        if "seo" in fields:
+            product["seo"] = fields["seo"]
+        # Photos modifiées (nouvelles prises, ordre, photo principale) : remplacées sur la fiche
+        signature = item.media_signature()
+        media, old_media = None, []
+        if signature and state.extra.get("media_sig") and signature != state.extra["media_sig"]:
+            state.extra["uploaded"] = {}
+            media = [{"originalSource": f["originalSource"], "mediaContentType": f["contentType"], "alt": f["alt"]}
+                     for f in self._media_inputs(item, state)]
+            old_media = [m["id"] for m in (current.get("media") or {}).get("nodes", [])]
+        data = self.graphql(PRODUCT_UPDATE, {"product": product, "media": media})
         self._user_errors(data["productUpdate"], "mise à jour")
-        _options, variants = self._variants(item, kind.form)
-        known = state.extra.get("variants", {})
-        prices = [{"id": known[v["sku"]]["id"], "price": v["price"]} for v in variants if v["sku"] in known]
-        if prices:
-            data = self.graphql(VARIANTS_PRICE, {"productId": state.remote_id, "variants": prices})
-            self._user_errors(data["productVariantsBulkUpdate"], "prix")
-        state.price = parse_price(item.info.prix)
+        if old_media:
+            # Anciennes photos détachées de la fiche (elles restent dans Contenu → Fichiers)
+            data = self.graphql(DETACH_MEDIA, {"files": [{"id": mid, "referencesToRemove": [state.remote_id]}
+                                                         for mid in old_media]})
+            self._user_errors(data["fileUpdate"], "anciennes photos")
+        if signature:
+            state.extra["media_sig"] = signature
+        state.extra["envoye"] = _sent_values(fields)
+        vocab.remember(item.listing.metafields)
+        if state.extra.get("canaux") is False:
+            # Mise en vente sur les canaux coupée à la création : refaite
+            self._publish_channels(state.remote_id)
+            state.extra["canaux"] = True
         self._translate(item, state.remote_id)
 
+    # --- prix ----------------------------------------------------------------
+    def set_price(self, item: CatalogItem, state: PlatformState) -> None:
+        """Prix et prix barré (promotion) ; les autres tailles gardent leur écart de prix."""
+        if not state.remote_id:
+            return
+        product = self.graphql(PRODUCT_CURRENT, {"id": state.remote_id})["product"]
+        if product is None:
+            raise PlatformError("Produit introuvable sur Shopify (supprimé ?).")
+        variants = product["variants"]["nodes"]
+        main = main_variant(variants, reference_sku(item))
+        new_base = parse_price(item.info.prix)
+        compare = parse_price(item.info.prix_barre) if item.info.prix_barre.strip() else 0.0
+        changes = variant_prices(variants, new_base, float(main["price"]) if main else new_base,
+                                 compare if compare > new_base else None)
+        if changes:
+            data = self.graphql(VARIANTS_PRICE, {"productId": state.remote_id, "variants": changes})
+            self._user_errors(data["productVariantsBulkUpdate"], "prix")
+        state.price = new_base
+
     # --- stock ---------------------------------------------------------------
-    def _levels(self, product_id: str) -> list[tuple[str, str, int]]:
-        """(sku, article d'inventaire, quantité disponible) de chaque variante à l'emplacement utilisé."""
+    def _inventory(self, product_id: str) -> tuple[str, list[tuple[str, str, int]]]:
+        """Statut du produit, et (sku, article d'inventaire, quantité disponible) de chaque variante à
+        l'emplacement utilisé."""
         location = self.location_id()
         product = self.graphql(INVENTORY, {"id": product_id})["product"]
         if product is None:
@@ -409,23 +682,22 @@ class Shopify(Platform):
                 if level["location"]["id"] == location:
                     quantity = next((q["quantity"] for q in level["quantities"] if q["name"] == "available"), 0)
             out.append((v["sku"] or "", v["inventoryItem"]["id"], quantity))
-        return out
+        return product.get("status") or "", out
 
     def set_quantity(self, item: CatalogItem, state: PlatformState, quantity: int) -> None:
         if not state.remote_id:
             return
         location = self.location_id()
-        quantities = [{"inventoryItemId": inv, "locationId": location, "quantity": max(0, quantity),
-                       "changeFromQuantity": current}
-                      for _sku, inv, current in self._levels(state.remote_id) if current != max(0, quantity)]
-        if quantities:
+        status, levels = self._inventory(state.remote_id)
+        plan = plan_quantities(levels, quantity, spread_stock(item, state))
+        if plan:
             data = self.graphql(SET_QUANTITIES, {"key": str(uuid.uuid4()), "input": {
-                "name": "available", "reason": "correction", "quantities": quantities,
-                "referenceDocumentUri": f"gemz://synchro/{item.sku}"}})
+                "name": "available", "reason": "correction", "referenceDocumentUri": f"gemz://synchro/{item.sku}",
+                "quantities": [{"inventoryItemId": inv, "locationId": location, "quantity": new,
+                                "changeFromQuantity": old} for inv, (old, new) in plan.items()]}})
             self._user_errors(data["inventorySetQuantities"], "stock")
         if self.settings.shopify_archive_sold:
             # Pièce vendue : retirée de la boutique (archivée, donc récupérable), remise en ligne si restock
-            status = (self.graphql(PRODUCT_CURRENT, {"id": state.remote_id})["product"] or {}).get("status")
             wanted = "ARCHIVED" if quantity <= 0 else "ACTIVE"
             if status in ("ACTIVE", "ARCHIVED") and status != wanted:
                 data = self.graphql(PRODUCT_UPDATE, {"product": {"id": state.remote_id, "status": wanted}})
@@ -434,9 +706,23 @@ class Shopify(Platform):
     def remote_quantity(self, item: CatalogItem, state: PlatformState) -> int | None:
         if not state.remote_id:
             return None
-        levels = self._levels(state.remote_id)
-        main = [q for sku, _inv, q in levels if sku == item.sku]
-        return main[0] if main else (max(q for _s, _i, q in levels) if levels else 0)
+        variants = [{"sku": sku, "quantity": q} for sku, _inv, q in self._inventory(state.remote_id)[1]]
+        return remote_stock(variants, item.sku, spread_stock(item, state))
+
+    def snapshot(self) -> dict[str, dict]:
+        """Stock, prix et statut de tous les produits en quelques appels : {produit: {status, variants}}."""
+        out: dict[str, dict] = {}
+        after = None
+        while True:
+            data = self.graphql(SNAPSHOT, {"after": after})["productVariants"]
+            for v in data["nodes"]:
+                product = out.setdefault(v["product"]["id"], {"status": v["product"]["status"], "variants": []})
+                product["variants"].append({"sku": v.get("sku") or "", "price": v.get("price"),
+                                            "compareAtPrice": v.get("compareAtPrice"),
+                                            "quantity": int(v.get("inventoryQuantity") or 0)})
+            if not data["pageInfo"]["hasNextPage"]:
+                return out
+            after = data["pageInfo"]["endCursor"]
 
     # --- commandes -----------------------------------------------------------
     def sales_since(self, since: str) -> list[Sale]:
@@ -464,15 +750,19 @@ class Shopify(Platform):
             data = self.graphql(PRODUCTS, {"after": after})["products"]
             for p in data["nodes"]:
                 variants = p["variants"]["nodes"]
+                main = main_variant(variants, "")
+                metafields = {m["key"]: _list_value(m["value"]) for m in (p.get("metafields") or {}).get("nodes", [])}
                 out.append(RemoteListing(
                     platform=self.name, remote_id=p["id"], title=p["title"],
                     skus=[v["sku"] for v in variants if v.get("sku")], quantity=int(p.get("totalInventory") or 0),
-                    price=float(variants[0]["price"]) if variants else 0.0, url=p.get("onlineStoreUrl") or "",
+                    price=float(main["price"]) if main else 0.0, url=p.get("onlineStoreUrl") or "",
                     product_type=p.get("productType", ""), tags=p.get("tags", []),
                     description=p.get("descriptionHtml", ""),
                     image_urls=[m["image"]["url"] for m in p["media"]["nodes"] if m.get("image")],
-                    extra={"status": p.get("status"), "variants": {v.get("sku") or v["id"]: {
-                        "id": v["id"], "inventory_item": v["inventoryItem"]["id"]} for v in variants}}))
+                    extra={"status": p.get("status"), "seo": p.get("seo") or {}, "metafields": metafields,
+                           "compare_at": (main or {}).get("compareAtPrice"),
+                           "variants": {v.get("sku") or v["id"]: {"id": v["id"], "inventory_item": v["inventoryItem"]["id"]}
+                                        for v in variants}}))
             if not data["pageInfo"]["hasNextPage"]:
                 return out
             after = data["pageInfo"]["endCursor"]

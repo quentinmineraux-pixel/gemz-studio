@@ -18,7 +18,8 @@ from ..config import Settings
 from ..listing import ai
 from ..listing.prices import fmt_eur, platform_price, to_usd
 from ..platforms import ebay as ebay_mod, etsy as etsy_mod, shopify as shopify_mod
-from .common import run_in_background
+from ..salespage import new_code, page_url
+from .common import pil_to_pixmap, run_in_background
 
 PENDING = "<span style='color:#b9770e'>À brancher ensemble, étape par étape.</span>"
 
@@ -550,7 +551,64 @@ class SyncTab(QWidget):
         pf.addRow(test)
         pf.addRow(self.state)
         layout.addWidget(phone)
+
+        page = QGroupBox("Mes ventes sur le téléphone (même Wi-Fi que le PC)")
+        sl = QHBoxLayout(page)
+        left = QFormLayout()
+        self.sales_page = QCheckBox("Afficher les ventes du jour et du mois sur le téléphone")
+        self.sales_page.setChecked(settings.sales_page)
+        self.port = QSpinBox()
+        self.port.setRange(1024, 65535)
+        self.port.setValue(settings.sales_page_port)
+        self.code = settings.sales_page_code or new_code()
+        self.address = QLabel()
+        self.address.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.address.setWordWrap(True)
+        renew = QPushButton("Changer le code secret de l'adresse")
+        renew.clicked.connect(self._new_code)
+        hint = QLabel("Scanne le QR code avec l'appareil photo du téléphone, puis « Ajouter à l'écran d'accueil ». "
+                      "La page ne s'ouvre que sur ton Wi-Fi, avec le code secret de l'adresse, et tant que GemZ Studio "
+                      "est ouvert. La première fois, Windows demande d'autoriser GemZ Studio sur le réseau : coche "
+                      "« Réseaux privés » puis « Autoriser ».")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(placeholder-text);")
+        left.addRow(self.sales_page)
+        left.addRow("Port", self.port)
+        left.addRow("Adresse", self.address)
+        left.addRow(renew)
+        left.addRow(hint)
+        sl.addLayout(left, 1)
+        self.qr = QLabel()
+        self.qr.setFixedSize(190, 190)
+        self.qr.setAlignment(Qt.AlignCenter)
+        sl.addWidget(self.qr)
+        self.sales_page.toggled.connect(self._refresh_page)
+        self.port.valueChanged.connect(self._refresh_page)
+        layout.addWidget(page)
         layout.addStretch(1)
+        self._refresh_page()
+
+    def _new_code(self) -> None:
+        self.code = new_code()   # l'ancienne adresse ne marchera plus
+        self._refresh_page()
+
+    def _refresh_page(self, *_):
+        on = self.sales_page.isChecked()
+        self.port.setEnabled(on)
+        if not on:
+            self.address.setText("<span style='color:#888'>Désactivée</span>")
+            self.qr.clear()
+            return
+        url = page_url(self.port.value(), self.code)
+        self.address.setText(f"<a href='{url}'>{url}</a>")
+        self.address.setOpenExternalLinks(True)
+        try:
+            import qrcode
+
+            image = qrcode.make(url, box_size=5, border=2).get_image()
+            self.qr.setPixmap(pil_to_pixmap(image).scaled(self.qr.size(), Qt.KeepAspectRatio, Qt.FastTransformation))
+        except Exception:  # noqa: BLE001 - sans QR code, l'adresse reste affichée
+            self.qr.setText("QR code indisponible")
 
     def _test(self) -> None:
         topic = self.topic.text().strip()
@@ -569,6 +627,9 @@ class SyncTab(QWidget):
         s.sync_minutes = self.minutes.value()
         s.publish_paused = self.paused.isChecked()
         s.ntfy_topic = self.topic.text().strip()
+        s.sales_page = self.sales_page.isChecked()
+        s.sales_page_port = self.port.value()
+        s.sales_page_code = self.code
 
     def secrets(self, into: dict[str, str]) -> None:
         pass

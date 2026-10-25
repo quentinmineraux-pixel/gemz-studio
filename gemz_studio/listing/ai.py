@@ -14,6 +14,7 @@ from PIL import Image
 
 from .. import vault
 from ..config import ProductKind, Settings
+from ..thumbs import sized_url
 from ..models import ProductInfo
 from .countries import country_name
 from .texts import LANGS
@@ -111,8 +112,9 @@ def pick_photos(photos: list[str], count: int) -> list[str]:
     return [photos[int(i * step)] for i in range(count)]
 
 
-def _encode(path: str) -> dict:
-    img = Image.open(path)
+def _encode(source) -> dict:
+    """Photo locale (chemin) ou téléchargée (octets), réduite à 768 px : peu de jetons par photo."""
+    img = Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)
     img.draft("RGB", (PHOTO_SIDE, PHOTO_SIDE))
     img = img.convert("RGB")
     img.thumbnail((PHOTO_SIDE, PHOTO_SIDE))
@@ -120,6 +122,14 @@ def _encode(path: str) -> dict:
     img.save(buf, "JPEG", quality=80)
     return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                         "data": base64.standard_b64encode(buf.getvalue()).decode("ascii")}}
+
+
+def _download(url: str) -> bytes:
+    import requests
+
+    r = requests.get(sized_url(url, PHOTO_SIDE), timeout=60, headers={"User-Agent": "GemZ-Studio/1.0"})
+    r.raise_for_status()
+    return r.content
 
 
 def product_facts(info: ProductInfo, kind: ProductKind) -> str:
@@ -136,12 +146,17 @@ def product_facts(info: ProductInfo, kind: ProductKind) -> str:
     return "\n".join(f"{label} : {value}" for label, value in rows if str(value).strip())
 
 
-def generate(info: ProductInfo, kind: ProductKind, photos: list[str], settings: Settings, catalog) -> tuple[dict, float]:
-    """Renvoie (textes par langue + tags, coût en euros). Lève AiError / AiBudgetError."""
+def generate(info: ProductInfo, kind: ProductKind, photos: list[str], settings: Settings, catalog,
+             image_urls: list[str] | None = None, current_text: str = "") -> tuple[dict, float]:
+    """Renvoie (textes par langue + tags, coût en euros). Lève AiError / AiBudgetError.
+
+    Pièce importée de Shopify (pas de photo locale) : les photos de la boutique sont utilisées, et le
+    texte actuel est fourni pour que la réécriture garde les faits.
+    """
     key = api_key()
     if not key:
         raise AiError("Clé IA non renseignée (Réglages → IA) : la fiche reste à compléter.")
-    chosen = pick_photos(photos, max(1, settings.ai_photos))
+    chosen = pick_photos(list(photos) or list(image_urls or []), max(1, settings.ai_photos))
     spent = month_cost(catalog)
     if spent + estimate_eur(settings, len(chosen)) > settings.ai_monthly_cap_eur:
         raise AiBudgetError(f"Plafond IA du mois atteint ({spent:.2f} € sur {settings.ai_monthly_cap_eur:.2f} €).")
@@ -149,8 +164,22 @@ def generate(info: ProductInfo, kind: ProductKind, photos: list[str], settings: 
     import anthropic
 
     model = settings.ai_model if settings.ai_model in MODELS else DEFAULT_MODEL
-    content = [_encode(p) for p in chosen]
-    content.append({"type": "text", "text": "Données du produit :\n" + product_facts(info, kind)})
+    content = []
+    for source in chosen:
+        try:
+            content.append(_encode(_download(source) if source.startswith("https://") else source))
+        except Exception as e:  # noqa: BLE001 - une photo illisible ne bloque pas les autres
+            failure = e
+    if chosen and not content:
+        raise AiError(f"Photos de la pièce introuvables, nouvel essai plus tard ({failure}).")
+    text = "Données du produit :\n" + product_facts(info, kind)
+    if not content:
+        text += ("\n\nAucune photo fournie : pour « aspect », reste général et n'invente aucun détail visuel "
+                 "(couleur, forme) qui ne figure pas dans les données.")
+    if current_text.strip():
+        text += ("\n\nTexte actuel de la fiche, à réécrire dans le format demandé en gardant ses faits "
+                 "(n'en ajoute pas d'autres) :\n" + current_text.strip()[:3000])
+    content.append({"type": "text", "text": text})
     request = dict(
         model=model,
         max_tokens=16000,

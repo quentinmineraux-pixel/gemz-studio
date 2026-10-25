@@ -16,8 +16,9 @@ from urllib.parse import urlencode
 
 from .. import vault
 from ..catalog import CatalogItem, PlatformState
+from ..listing.builder import default_etsy_tags, default_pierres
 from ..listing.prices import parse_price, platform_price
-from ..listing.texts import LANGS
+from ..listing.texts import LANG_NAMES, LANGS
 from .base import NotConfigured, Platform, PlatformError, RemoteListing, Sale, USER_AGENT, request
 
 API = "https://api.etsy.com/v3/application"
@@ -31,6 +32,18 @@ SECRET_SHARED = "etsy_shared_secret"
 SECRET_REFRESH = "etsy_refresh_token"
 CUSTOM_PROPERTY = 513        # propriété libre d'Etsy, utilisée pour la taille des bagues et bracelets
 TITLE_MAX = 140
+MIN_PRICE = 0.20
+# Question posée à l'acheteur d'une bague (en plus du choix de la taille)
+RING_QUESTION = {"question_text": "Taille de doigt (FR) ou précision", "question_type": "text_input",
+                 "instructions": "Si vous hésitez entre deux tailles, indiquez votre tour de doigt en mm.",
+                 "required": False, "max_allowed_characters": 100}
+
+
+def offering_amount(price) -> float:
+    """Prix d'une offre Etsy ({amount, divisor} ou nombre) en euros."""
+    if isinstance(price, dict):
+        return float(price.get("amount", 0)) / float(price.get("divisor") or 100)
+    return float(price or 0)
 
 
 def html_to_text(text: str) -> str:
@@ -233,14 +246,22 @@ class Etsy(Platform):
                     offering.setdefault("readiness_state_id", readiness)
         return inventory
 
-    def _set_inventory_quantity(self, listing_id: str, quantity: int) -> None:
-        """Change seulement les quantités de l'annonce : prix, variantes, SKU et délais restent ceux d'Etsy
-        (indispensable pour les annonces existantes reliées à l'import)."""
+    def _rewrite_inventory(self, listing_id: str, quantity: int | None = None,
+                           base_price: float | None = None) -> None:
+        """Change les quantités et/ou les prix de l'annonce en gardant tout le reste tel quel
+        (variantes, SKU, délais) : indispensable pour les annonces reliées.
+
+        base_price : nouveau prix de l'offre la moins chère ; les autres tailles gardent leur écart.
+        """
         current = self.call("GET", f"/listings/{listing_id}/inventory")
-        products = []
-        for product in current.get("products", []):
-            if product.get("is_deleted"):
-                continue
+        products = [p for p in current.get("products", []) if not p.get("is_deleted")]
+        delta = 0.0
+        if base_price is not None:
+            prices = [offering_amount(o.get("price")) for p in products for o in p.get("offerings", [])
+                      if not o.get("is_deleted")]
+            delta = base_price - min(prices) if prices else 0.0
+        body_products = []
+        for product in products:
             values = [{k: v for k, v in pv.items() if k in ("property_id", "property_name", "scale_id", "value_ids",
                                                           "values") and v is not None}
                       for pv in product.get("property_values", [])]
@@ -248,51 +269,34 @@ class Etsy(Platform):
             for offering in product.get("offerings", []):
                 if offering.get("is_deleted"):
                     continue
-                price = offering.get("price") or {}
-                amount = price.get("amount", 0) / (price.get("divisor") or 100) if isinstance(price, dict) else price
-                entry = {"price": round(float(amount), 2), "quantity": max(1, quantity),
+                amount = offering_amount(offering.get("price"))
+                entry = {"price": round(max(MIN_PRICE, amount + delta), 2),
+                         "quantity": max(1, quantity) if quantity is not None else max(1, int(offering.get("quantity") or 1)),
                          "is_enabled": offering.get("is_enabled", True)}
                 if offering.get("readiness_state_id"):
                     entry["readiness_state_id"] = offering["readiness_state_id"]
                 offerings.append(entry)
-            products.append({"sku": product.get("sku") or "", "property_values": values, "offerings": offerings})
-        body = {"products": products,
+            body_products.append({"sku": product.get("sku") or "", "property_values": values, "offerings": offerings})
+        body = {"products": body_products,
                 "price_on_property": current.get("price_on_property", []),
                 "quantity_on_property": current.get("quantity_on_property", []),
                 "sku_on_property": current.get("sku_on_property", [])}
         self.call("PUT", f"/listings/{listing_id}/inventory", json_body=self._with_readiness(body))
 
-    def publish(self, item: CatalogItem, state: PlatformState) -> None:
-        kind = self.settings.kind(item.kind_id)
-        if not kind.etsy_taxonomy_id:
-            raise NotConfigured(f"Catégorie Etsy du type « {kind.label} » à choisir (Réglages → Connexions).")
-        if not (self.settings.etsy_shipping_profile_id and self.settings.etsy_return_policy_id):
-            raise NotConfigured("Profil d'expédition et politique de retour Etsy à choisir (Réglages → Connexions).")
-        shop = self.settings.etsy_shop_id
-        lang = self.settings.etsy_shop_language if self.settings.etsy_shop_language in LANGS else "en"
-        title, description = self._texts(item, lang)
-        if not state.remote_id:
-            body = {
-                "quantity": max(1, item.stock), "title": title, "description": description,
-                "price": self._price(item), "who_made": self.settings.etsy_who_made, "when_made": self.settings.etsy_when_made,
-                "taxonomy_id": kind.etsy_taxonomy_id, "is_supply": False, "type": "physical",
-                "shipping_profile_id": int(self.settings.etsy_shipping_profile_id),
-                "return_policy_id": int(self.settings.etsy_return_policy_id),
-                "tags": item.listing.etsy_tags, "materials": item.listing.pierres[:13],
-                "should_auto_renew": True,
-            }
-            readiness = self._readiness_id()
-            if readiness:
-                body["readiness_state_id"] = readiness
-            listing = self.call("POST", f"/shops/{shop}/listings", json_body=body)
-            state.remote_id = str(listing["listing_id"])
-            state.url = listing.get("url", f"https://www.etsy.com/listing/{state.remote_id}")
-        listing_id = state.remote_id
+    def _set_inventory_quantity(self, listing_id: str, quantity: int) -> None:
+        self._rewrite_inventory(listing_id, quantity=quantity)
+
+    def _upload_media(self, item: CatalogItem, state: PlatformState, lang: str, replace: bool = False) -> None:
+        """Photos (et vidéo) de l'annonce ; replace : nouvelles photos à la place des anciennes."""
+        shop, listing_id = self.settings.etsy_shop_id, state.remote_id
+        if replace:
+            state.extra["uploaded"] = []
         done = state.extra.setdefault("uploaded", [])   # reprise après coupure : pas de doublon de photo
         alt = item.listing.texts[lang].alt[:250]
         # Pièce importée de Shopify (pas de photos locales) : on reprend les photos de la boutique
         sources = item.photos or [u for u in item.state("shopify").extra.get("images", []) if u.startswith("https://")]
-        for rank, path in enumerate(sources[:20], start=1):
+        sources = sources[:20]
+        for rank, path in enumerate(sources, start=1):
             if path in done:
                 continue
             if path.startswith("https://"):
@@ -302,9 +306,20 @@ class Etsy(Platform):
                 content, name = r.content, f"{item.sku}_{rank:02d}.jpg"
             else:
                 content, name = Path(path).read_bytes(), Path(path).name
-            self.call("POST", f"/shops/{shop}/listings/{listing_id}/images",
-                      data={"rank": rank, "alt_text": alt}, files={"image": (name, content, "image/jpeg")})
+            data = {"rank": rank, "alt_text": alt}
+            if replace:
+                data["overwrite"] = "true"   # remplace la photo de même rang
+            self.call("POST", f"/shops/{shop}/listings/{listing_id}/images", data=data,
+                      files={"image": (name, content, "image/jpeg")})
             done.append(path)
+        if replace:
+            # Photos en trop (la nouvelle série est plus courte) : retirées
+            for image in self.call("GET", f"/listings/{listing_id}/images").get("results", []):
+                if int(image.get("rank") or 0) > len(sources):
+                    self.call("DELETE", f"/shops/{shop}/listings/{listing_id}/images/{image['listing_image_id']}")
+            if item.videos:
+                for video in self.call("GET", f"/listings/{listing_id}/videos").get("results", []):
+                    self.call("DELETE", f"/shops/{shop}/listings/{listing_id}/videos/{video['video_id']}")
         for path in item.videos[:1]:
             if path in done:
                 continue
@@ -312,36 +327,121 @@ class Etsy(Platform):
                 self.call("POST", f"/shops/{shop}/listings/{listing_id}/videos",
                           data={"name": Path(path).name}, files={"video": (Path(path).name, f, "video/mp4")})
             done.append(path)
+
+    def publish(self, item: CatalogItem, state: PlatformState) -> None:
+        kind = self.settings.kind(item.kind_id)
+        if not kind.etsy_taxonomy_id:
+            raise NotConfigured(f"Catégorie Etsy du type « {kind.label} » à choisir (Réglages → Connexions).")
+        if not (self.settings.etsy_shipping_profile_id and self.settings.etsy_return_policy_id):
+            raise NotConfigured("Profil d'expédition et politique de retour Etsy à choisir (Réglages → Connexions).")
+        shop = self.settings.etsy_shop_id
+        lang = self._lang()
+        title, description = self._texts(item, lang)
+        if not state.remote_id:
+            body = {
+                "quantity": max(1, item.stock), "title": title, "description": description,
+                "price": self._price(item), "who_made": self.settings.etsy_who_made, "when_made": self.settings.etsy_when_made,
+                "taxonomy_id": kind.etsy_taxonomy_id, "is_supply": False, "type": "physical",
+                "shipping_profile_id": int(self.settings.etsy_shipping_profile_id),
+                "return_policy_id": int(self.settings.etsy_return_policy_id),
+                "tags": self._tags(item), "materials": item.listing.pierres[:13],
+                "should_auto_renew": True,
+            }
+            readiness = self._readiness_id()
+            if readiness:
+                body["readiness_state_id"] = readiness
+            listing = self.call("POST", f"/shops/{shop}/listings", json_body=body)
+            state.remote_id = str(listing["listing_id"])
+            state.url = listing.get("url", f"https://www.etsy.com/listing/{state.remote_id}")
+            state.extra["brouillon"] = True   # pas encore en vente : un envoi coupé reprend ici
+        else:
+            # Reprise d'un envoi coupé (brouillon déjà créé) : textes peut-être retouchés depuis
+            self.call("PATCH", f"/shops/{shop}/listings/{state.remote_id}",
+                      json_body={"title": title, "description": description, "tags": self._tags(item)})
+        listing_id = state.remote_id
+        self._upload_media(item, state, lang)
+        state.extra["media_sig"] = item.media_signature()
         self.call("PUT", f"/listings/{listing_id}/inventory", json_body=self._with_readiness(self._inventory(item, item.stock)))
-        self._translate(item, listing_id, lang)
+        self._translate(item, state, lang)
+        if kind.form == "bague" and not state.extra.get("personnalisation"):
+            self._personalize(state)
         self.call("PATCH", f"/shops/{shop}/listings/{listing_id}", json_body={"state": "active"})
+        state.extra.pop("brouillon", None)
         state.price = self._price(item)
 
-    def _translate(self, item: CatalogItem, listing_id: str, primary: str) -> None:
+    def _lang(self) -> str:
+        return self.settings.etsy_shop_language if self.settings.etsy_shop_language in LANGS else "en"
+
+    def _tags(self, item: CatalogItem) -> list[str]:
+        # Pièce importée de Shopify (aucun tag Etsy rédigé) : tags tirés du nom, des pierres et du pays
+        return item.listing.etsy_tags or default_etsy_tags(item.info, item.listing.pierres or default_pierres(item.info))
+
+    def _personalize(self, state: PlatformState) -> None:
+        """Bague : en plus des tailles en variantes, un champ libre pour la taille ou une précision."""
+        try:
+            self.call("POST", f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}/personalization",
+                      params={"supports_multiple_personalization_questions": "true"},
+                      json_body={"personalization_questions": [RING_QUESTION]})
+            state.extra["personnalisation"] = True
+        except PlatformError as e:
+            self._warn(state, f"champ de personnalisation de la bague non ajouté ({e})")
+
+    @staticmethod
+    def _warn(state: PlatformState, text: str) -> None:
+        """Avertissement inscrit au journal après l'envoi (l'annonce reste en ligne)."""
+        previous = state.extra.get("avertissement", "")
+        state.extra["avertissement"] = f"{previous} · {text}" if previous else text
+
+    def _translate(self, item: CatalogItem, state: PlatformState, primary: str) -> None:
+        """Traductions des autres langues rédigées ; création (POST) si elles n'existent pas encore."""
+        failed = []
         for lang in LANGS:
             if lang == primary or not item.listing.has_lang(lang):
                 continue
             title, description = self._texts(item, lang)
+            path = f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}/translations/{lang}"
+            body = {"title": title, "description": description, "tags": self._tags(item)}
             try:
-                self.call("PUT", f"/shops/{self.settings.etsy_shop_id}/listings/{listing_id}/translations/{lang}",
-                          json_body={"title": title, "description": description,
-                                     "tags": item.listing.etsy_tags})
-            except PlatformError:
-                pass  # langue non activée sur la boutique : l'annonce reste valable
+                try:
+                    self.call("PUT", path, json_body=body)
+                except PlatformError as e:
+                    if "(404)" not in str(e) and "(400)" not in str(e):
+                        raise
+                    self.call("POST", path, json_body=body)
+            except PlatformError as e:
+                failed.append(f"{LANG_NAMES[lang]} ({str(e)[:120]})")
+        if failed:
+            self._warn(state, "traduction refusée : " + ", ".join(failed))
 
     def update(self, item: CatalogItem, state: PlatformState) -> None:
-        if not state.remote_id:
-            return self.publish(item, state)
-        lang = self.settings.etsy_shop_language if self.settings.etsy_shop_language in LANGS else "en"
+        """Textes, tags, traductions et photos (si elles ont changé) ; les prix passent par set_price."""
+        if not state.remote_id or state.extra.get("brouillon"):
+            return self.publish(item, state)   # jamais mise en vente (envoi coupé) : on termine la création
+        lang = self._lang()
         title, description = self._texts(item, lang)
-        self.call("PATCH", f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}",
-                  json_body={"title": title, "description": description, "tags": item.listing.etsy_tags})
-        self._translate(item, state.remote_id, lang)
+        body = {"title": title, "description": description}
+        if item.listing.etsy_tags:   # annonce reliée sans tags rédigés : on garde ceux d'Etsy
+            body["tags"] = item.listing.etsy_tags
+        self.call("PATCH", f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}", json_body=body)
+        signature = item.media_signature()
+        if signature and state.extra.get("media_sig") and signature != state.extra["media_sig"]:
+            self._upload_media(item, state, lang, replace=True)
+        if signature:
+            state.extra["media_sig"] = signature
+        self._translate(item, state, lang)
+
+    def set_price(self, item: CatalogItem, state: PlatformState) -> None:
+        """Nouveau prix (majoration comprise) ; les autres tailles gardent leur écart."""
+        if not state.remote_id:
+            return
+        new = self._price(item)
+        self._rewrite_inventory(state.remote_id, base_price=new)
+        state.price = new
 
     # --- stock ---------------------------------------------------------------
     def set_quantity(self, item: CatalogItem, state: PlatformState, quantity: int) -> None:
-        if not state.remote_id:
-            return
+        if not state.remote_id or state.extra.get("brouillon"):
+            return   # brouillon pas encore en vente : la fin de la création s'en charge
         path = f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}"
         if quantity <= 0:
             # Etsy n'accepte pas une quantité nulle sur une annonce active : on la désactive
@@ -381,29 +481,34 @@ class Etsy(Platform):
                                       line_id=str(tr["transaction_id"]), sku=tr.get("sku") or "",
                                       remote_id=str(tr.get("listing_id", "")), quantity=int(tr.get("quantity", 1)),
                                       price=amount, currency=price.get("currency_code", "EUR"), created=created,
-                                      title=tr.get("title", ""), cancelled=cancelled))
+                                      title=html.unescape(tr.get("title") or ""), cancelled=cancelled))
             offset += 100
             if offset >= int(data.get("count", 0)):
                 return sales
 
     # --- import --------------------------------------------------------------
-    def list_listings(self) -> list[RemoteListing]:
+    def list_listings(self, states: tuple[str, ...] = ("active",)) -> list[RemoteListing]:
+        """Annonces de la boutique ; « sold_out » : annonces épuisées (pièces vendues sur Etsy)."""
         out: list[RemoteListing] = []
-        offset = 0
-        while True:
-            data = self.call("GET", f"/shops/{self.settings.etsy_shop_id}/listings",
-                             params={"state": "active", "limit": 100, "offset": offset, "includes": "Images"})
-            for listing in data.get("results", []):
-                price = listing.get("price") or {}
-                out.append(RemoteListing(
-                    platform=self.name, remote_id=str(listing["listing_id"]), title=html.unescape(listing.get("title", "")),
-                    skus=list(listing.get("skus") or []), quantity=int(listing.get("quantity") or 0),
-                    price=float(price.get("amount", 0)) / float(price.get("divisor", 100) or 100),
-                    url=listing.get("url", ""), tags=list(listing.get("tags") or []),
-                    description=listing.get("description", ""),
-                    image_urls=[img.get("url_fullxfull", "") for img in listing.get("images") or []],
-                    extra={k: listing.get(k) for k in ("taxonomy_id", "shipping_profile_id", "return_policy_id",
-                                                        "who_made", "when_made", "language")}))
-            offset += 100
-            if offset >= int(data.get("count", 0)):
-                return out
+        for state in states:
+            offset = 0
+            while True:
+                data = self.call("GET", f"/shops/{self.settings.etsy_shop_id}/listings",
+                                 params={"state": state, "limit": 100, "offset": offset, "includes": "Images"})
+                for listing in data.get("results", []):
+                    price = listing.get("price") or {}
+                    out.append(RemoteListing(
+                        platform=self.name, remote_id=str(listing["listing_id"]),
+                        title=html.unescape(listing.get("title", "")),
+                        skus=list(listing.get("skus") or []), quantity=int(listing.get("quantity") or 0),
+                        price=float(price.get("amount", 0)) / float(price.get("divisor", 100) or 100),
+                        url=listing.get("url", ""), tags=list(listing.get("tags") or []),
+                        description=listing.get("description", ""),
+                        image_urls=[img.get("url_fullxfull", "") for img in listing.get("images") or []],
+                        extra={"state": state, **{k: listing.get(k) for k in (
+                            "taxonomy_id", "shipping_profile_id", "return_policy_id", "who_made", "when_made",
+                            "language")}}))
+                offset += 100
+                if offset >= int(data.get("count", 0)):
+                    break
+        return out

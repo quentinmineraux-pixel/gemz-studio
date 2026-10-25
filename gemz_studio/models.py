@@ -46,6 +46,7 @@ class ProductInfo:
     region: str = ""
     traitement: str = "naturel"
     prix: str = ""            # prix TTC Shopify en euros
+    prix_barre: str = ""      # prix barré (promotion) sur Shopify ; vide = pas de promotion
     quantite: int = 1
     sous_categories: list[str] = field(default_factory=list)
     # bagues

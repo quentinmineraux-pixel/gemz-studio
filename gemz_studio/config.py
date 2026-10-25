@@ -49,22 +49,31 @@ class ProductKind:
     # Catégories des places de marché (choisies ensemble au branchement d'Etsy et d'eBay)
     etsy_taxonomy_id: int = 0
     ebay_category_id: str = ""
+    # Catégorie Shopify (taxonomie standard : filtres Couleur, Google Shopping) et métachamp « Forme »
+    # tels qu'utilisés dans la boutique (minéraux « brut », pierres polies « polie »)
+    shopify_category: str = ""
+    forme: str = ""
 
+
+TAXONOMY = "gid://shopify/TaxonomyCategory/"
 
 DEFAULT_KINDS: list[ProductKind] = [
     ProductKind("mineral-collection", "Minéral de collection", "mineral-collection",
-                subtags=["cristal", "brut", "geode", "rare"]),
+                subtags=["cristal", "brut", "geode", "rare"], shopify_category=TAXONOMY + "ae-2-2-6-3", forme="brut"),
     ProductKind("pierre-polie", "Pierre polie", "pierre-polie",
-                subtags=["forme-libre", "sphere", "galet", "cabochon"]),
-    ProductKind("bague", "Bague", "bijou", fixed_tags=["bague"], form="bague"),
-    ProductKind("pendentif", "Pendentif", "bijou", fixed_tags=["pendentif"]),
-    ProductKind("boucles", "Boucles d'oreilles", "bijou", fixed_tags=["boucles"]),
+                subtags=["forme-libre", "sphere", "galet", "cabochon"], shopify_category=TAXONOMY + "ae-2-2-6-4",
+                forme="polie"),
+    ProductKind("bague", "Bague", "bijou", fixed_tags=["bague"], form="bague", shopify_category=TAXONOMY + "aa-6-9"),
+    ProductKind("pendentif", "Pendentif", "bijou", fixed_tags=["pendentif"], shopify_category=TAXONOMY + "aa-6-5-1"),
+    ProductKind("boucles", "Boucles d'oreilles", "bijou", fixed_tags=["boucles"], shopify_category=TAXONOMY + "aa-6-6"),
+    # Forme des bracelets : « bracelet chips » / « bracelet perle », d'après la sous-catégorie
     ProductKind("bracelet", "Bracelet", "bracelet",
-                subtags=["bracelet-chips", "bracelet-perle"], form="bracelet"),
+                subtags=["bracelet-chips", "bracelet-perle"], form="bracelet", shopify_category=TAXONOMY + "aa-6-3"),
     ProductKind("fossile", "Fossile", "fossile",
-                subtags=["ammonite", "trilobite", "marin", "vegetal", "plaque", "rare"]),
+                subtags=["ammonite", "trilobite", "marin", "vegetal", "plaque", "rare"],
+                shopify_category=TAXONOMY + "ae-2-2-6-1"),
     ProductKind("sculpture", "Sculpture", "sculpture",
-                subtags=["animal", "symbolique", "esoterique"]),
+                subtags=["animal", "symbolique", "esoterique"], shopify_category=TAXONOMY + "hg-3-4-3"),
     ProductKind("fait-main", "Pièce unique (fait main)", "fait-main"),
 ]
 
@@ -129,6 +138,10 @@ class Settings:
     sync_minutes: int = 3
     ntfy_topic: str = ""          # notifications téléphone (application gratuite ntfy)
     publish_paused: bool = False
+    # Page « Ventes » consultable depuis le téléphone, sur le même Wi-Fi (code secret dans l'adresse)
+    sales_page: bool = False
+    sales_page_port: int = 8770
+    sales_page_code: str = ""
 
     def kind(self, kind_id: str) -> ProductKind:
         for k in self.kinds:
@@ -153,7 +166,10 @@ class Settings:
             return cls()
         raw = json.loads(p.read_text(encoding="utf-8"))
         kind_fields = set(ProductKind.__dataclass_fields__)
-        kinds = [ProductKind(**{f: v for f, v in k.items() if f in kind_fields}) for k in raw.pop("kinds", [])] or None
+        # Champs ajoutés depuis l'enregistrement (catégorie Shopify, forme…) : repris des types par défaut
+        defaults = {k.id: asdict(k) for k in DEFAULT_KINDS}
+        kinds = [ProductKind(**{**defaults.get(k.get("id"), {}), **{f: v for f, v in k.items() if f in kind_fields}})
+                 for k in raw.pop("kinds", [])] or None
         known = {f for f in cls.__dataclass_fields__}
         s = cls(**{k: v for k, v in raw.items() if k in known})
         if kinds:

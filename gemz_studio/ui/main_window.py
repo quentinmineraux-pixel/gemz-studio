@@ -1,6 +1,7 @@
 """Fenêtre principale : produits de la séance, photos du produit, fiche."""
 from __future__ import annotations
 
+import copy
 import re
 import shutil
 import traceback
@@ -22,11 +23,12 @@ from ..imaging import render_web, thumbnail
 from ..models import VIDEO_EXT, A_COMPLETER, EN_PRISE, EN_TRAITEMENT, ERREUR, PRET, STATUS_LABELS, Session
 from ..processing import process_product
 from ..publishing import register_product
+from ..salespage import SalesPage
 from ..watcher import FolderWatcher
 from .camera_panel import CameraPanel
 from .catalog_window import CatalogWindow
 from .common import open_in_explorer, pil_to_pixmap, video_icon, video_thumbnail_icon
-from .listing_editor import ListingEditor
+from .listing_editor import edit_listing
 from .product_form import ProductForm
 from .settings_dialog import SettingsDialog
 
@@ -106,6 +108,7 @@ class MainWindow(QMainWindow):
         self.engine = Engine(self.settings, self.catalog, on_notify=self.bridge.notice.emit,
                              on_status=self.bridge.status.emit)
         self.catalog_window: CatalogWindow | None = None
+        self.sales_page = SalesPage(self.catalog)
         self.tray: QSystemTrayIcon | None = None
 
         self._build_toolbar()
@@ -114,6 +117,7 @@ class MainWindow(QMainWindow):
         self._resume_session()
         self._start_camera()
         self.engine.start()
+        self._apply_sales_page()
 
     # --- construction ------------------------------------------------------
     def _build_toolbar(self) -> None:
@@ -198,8 +202,8 @@ class MainWindow(QMainWindow):
 
     # --- catalogue et fiches ------------------------------------------------
     def open_catalog(self) -> None:
-        if self.catalog_window is None or not self.catalog_window.isVisible():
-            self.catalog_window = CatalogWindow(self)
+        if self.catalog_window is None:
+            self.catalog_window = CatalogWindow(self)   # gardée ensuite : miniatures déjà prêtes à la réouverture
         self.catalog_window.show()
         self.catalog_window.raise_()
         self.catalog_window.activateWindow()
@@ -208,7 +212,38 @@ class MainWindow(QMainWindow):
         if not sku or self.catalog.get(sku) is None:
             QMessageBox.information(self, APP_NAME, "La fiche apparaît une fois le produit traité.")
             return
-        ListingEditor(sku, self, self).exec()
+        edit_listing(sku, self, self)
+
+    def catalog_item_saved(self, item) -> None:
+        """Fiche modifiée dans le catalogue : la séance garde les mêmes informations, pour qu'un nouveau
+        traitement des photos ne remette pas les anciennes (prix compris)."""
+        if not self.session:
+            return
+        for product in self.session.products:
+            if product.sku != item.sku:
+                continue
+            for key in ("nom", "variete", "poids_g", "dimensions", "pays", "region", "prix", "prix_barre",
+                        "sous_categories"):
+                setattr(product.info, key, copy.deepcopy(getattr(item.info, key)))
+            if self.form.product is product:
+                self.form.product = None   # sans recopier le formulaire (anciennes valeurs) dans le produit
+                self.form.set_product(product, self.settings.kind(product.kind_id))
+            self._save_session()
+            self._refresh_products()
+
+    def _apply_sales_page(self) -> None:
+        """Page Ventes du téléphone : démarrée, déplacée ou arrêtée selon les réglages."""
+        s = self.settings
+        if not (s.sales_page and s.sales_page_code):
+            self.sales_page.stop()
+            return
+        if self.sales_page.running and (self.sales_page.port, self.sales_page.code) == (s.sales_page_port, s.sales_page_code):
+            return
+        try:
+            self.sales_page.start(s.sales_page_port, s.sales_page_code)
+        except OSError as e:
+            self.statusBar().showMessage(f"Page Ventes du téléphone : le port {s.sales_page_port} est déjà pris ({e}). "
+                                         "Choisis-en un autre dans Réglages → Synchro et notifications.", 60000)
 
     # --- séance ------------------------------------------------------------
     def _session_path(self) -> Path:
@@ -498,6 +533,7 @@ class MainWindow(QMainWindow):
             self.settings.save()
             self.form.settings = self.settings
             self.engine.update_settings(self.settings)
+            self._apply_sales_page()
             if self.session:
                 self.grouper.kind = self.settings.kind(self.session.kind_id)
                 self.grouper.auto_split = self.settings.auto_split
@@ -514,6 +550,9 @@ class MainWindow(QMainWindow):
         self.camera.stop()
         self.pool.waitForDone(30000)
         self.engine.stop()
+        self.sales_page.stop()
+        if self.catalog_window is not None:
+            self.catalog_window.thumbs.shutdown()
         if self.tray:
             self.tray.hide()
         super().closeEvent(event)

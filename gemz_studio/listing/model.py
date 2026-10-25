@@ -14,6 +14,7 @@ PIECES = ("nom", "particularite", "pays", "accroche", "aspect", "anecdote", "lit
 SOURCE_MODELE = "modele"   # textes fixes seulement : à compléter (IA ou à la main) avant publication
 SOURCE_IA = "ia"
 SOURCE_MANUEL = "manuel"
+SOURCE_IMPORT = "import"   # titre et description repris tels quels de Shopify (pas de morceaux rédigés)
 
 
 @dataclass
@@ -51,7 +52,14 @@ class Listing:
         listing = cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
         listing.texts = {lang: texts.get(lang, LangText()) for lang in LANGS}
         listing.pieces = {lang: dict(listing.pieces.get(lang, {})) for lang in LANGS}
+        if listing.source == SOURCE_MANUEL and not any(any(p.values()) for p in listing.pieces.values()) \
+                and listing.texts["fr"].description:
+            listing.source = SOURCE_IMPORT   # fiche importée par une version précédente
         return listing
+
+    @property
+    def imported(self) -> bool:
+        return self.source == SOURCE_IMPORT
 
     def has_lang(self, lang: str) -> bool:
         """Textes rédigés dans cette langue (sinon l'aperçu reprend le français, qui n'est pas envoyé)."""
@@ -65,6 +73,8 @@ class Listing:
         (sauf l'anglais pour Etsy et ebay.com, vérifié au moment de publier).
         """
         out = []
+        if self.imported:
+            return [] if self.texts["fr"].title.strip() and self.texts["fr"].description.strip() else ["titre", "description"]
         p = self.pieces.get("fr", {})
         for key in ("aspect", "lithotherapie"):
             if not p.get(key, "").strip():
