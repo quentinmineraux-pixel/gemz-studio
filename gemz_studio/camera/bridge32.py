@@ -70,6 +70,7 @@ class BridgeCamera(CameraBackend):
                               "utilise le kit officiel 64 bits (dossier EDSDK_64).")
         self.process: subprocess.Popen | None = None
         self._log = None
+        self._settings_changed = False
 
     def _call(self, method: str, *args):
         if self.process is None or self.process.poll() is not None:
@@ -90,6 +91,7 @@ class BridgeCamera(CameraBackend):
                               "de GemZ Studio).") from e
         self.name = header.get("name", self.name)
         self.recording = header.get("recording", self.recording)
+        self._settings_changed |= bool(header.get("changed"))
         if "error" in header:
             raise (CameraDisconnected if header.get("disconnected") else CameraError)(header["error"])
         return payload if header.get("bin") else header.get("value")
@@ -153,6 +155,19 @@ class BridgeCamera(CameraBackend):
     def set_zoom(self, zoom: int) -> None:
         self._call("set_zoom", zoom)
 
+    def focus_at(self, fx: float, fy: float) -> None:
+        self._call("focus_at", fx, fy)
+
+    def get_settings(self) -> dict:
+        return self._call("get_settings") or {}
+
+    def set_setting(self, key: str, value: int) -> None:
+        self._call("set_setting", key, value)
+
+    def take_settings_changed(self) -> bool:
+        changed, self._settings_changed = self._settings_changed, False
+        return changed
+
     def capture(self) -> None:
         self._call("capture")
 
@@ -168,7 +183,7 @@ class BridgeCamera(CameraBackend):
 
 ALLOWED = {"thread_init", "thread_exit", "connect", "disconnect", "poll", "start_liveview", "stop_liveview",
            "liveview_frame", "autofocus", "focus_step", "set_zoom", "capture", "start_movie", "stop_movie",
-           "collect_card_movies"}
+           "collect_card_movies", "focus_at", "get_settings", "set_setting"}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -222,7 +237,7 @@ def main(argv: list[str] | None = None) -> None:
         except Exception as e:  # noqa: BLE001 - toute erreur est renvoyée à GemZ Studio
             reply["error"] = str(e) or type(e).__name__
         if camera_ok:
-            reply.update(name=camera.name, recording=camera.recording)
+            reply.update(name=camera.name, recording=camera.recording, changed=camera.take_settings_changed())
         _send(channel_out, reply, payload)
         if method == "thread_exit":
             break

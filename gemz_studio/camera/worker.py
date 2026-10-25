@@ -18,11 +18,13 @@ class CameraWorker:
     def __init__(self, backend: CameraBackend,
                  on_state: Callable[[bool, str], None],
                  on_frame: Callable[[bytes], None],
-                 on_status: Callable[[str], None]):
+                 on_status: Callable[[str], None],
+                 on_settings: Callable[[dict], None] = lambda settings: None):
         self.backend = backend
         self.on_state = on_state
         self.on_frame = on_frame
         self.on_status = on_status
+        self.on_settings = on_settings
         backend.on_status = on_status
         self.connected = False
         self._commands: "queue.Queue[tuple[str, tuple]]" = queue.Queue()
@@ -61,6 +63,8 @@ class CameraWorker:
                 try:
                     self._handle_commands()
                     self.backend.poll()
+                    if self.backend.take_settings_changed():
+                        self._push_settings()
                     if self._liveview_wanted and now >= next_frame:
                         next_frame = now + FRAME_EVERY
                         frame = self.backend.liveview_frame()
@@ -84,10 +88,19 @@ class CameraWorker:
                 if self._liveview_wanted:
                     self.backend.start_liveview()
                 self.on_state(True, f"{self.backend.name} connecté")
+                self._push_settings()
         except CameraDisconnected:
             self._lost()
         except CameraError as e:
             self.on_state(False, str(e))
+
+    def _push_settings(self) -> None:
+        try:
+            self.on_settings(self.backend.get_settings())
+        except CameraDisconnected:
+            raise
+        except CameraError as e:
+            self.on_status(str(e))
 
     def _lost(self) -> None:
         self.connected = False
@@ -118,5 +131,10 @@ class CameraWorker:
             elif command == "collect_card_movies":
                 n = self.backend.collect_card_movies()
                 self.on_status(f"{n} vidéo(s) récupérée(s) depuis la carte" if n else "Aucune vidéo sur la carte")
+            elif command == "set_setting":
+                try:
+                    self.backend.set_setting(*args)
+                finally:
+                    self._push_settings()  # remet l'interface d'accord avec le boîtier, même si refusé
             else:
                 getattr(self.backend, command)(*args)

@@ -40,6 +40,10 @@ toi-même sur le Canon Developer Portal (il n'est pas fourni avec l'outil, licen
    `%APPDATA%\GemZ Studio\canon32.log`).
 3. Fermer EOS Utility, brancher le boîtier en USB et l'allumer : il se connecte tout seul, à chaque
    ouverture de GemZ Studio.
+4. Les réglages (ISO, vitesse, ouverture, correction, balance des blancs et température) se choisissent
+   en haut de l'écran Prise de vue. Pour tout régler d'ici, mets la molette du boîtier sur **M** ; tourner
+   une molette du boîtier met aussi l'écran à jour. Un clic dans la visée fait la mise au point à cet
+   endroit (autofocus du boîtier réglé sur « 1 collimateur », pas sur le suivi de visage).
 
 Onglet **Prise de vue** :
 

@@ -75,19 +75,54 @@ def test_passerelle_32_bits_avec_appareil_simule(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMZ_STUDIO_HOME", str(tmp_path / "donnees"))
     monkeypatch.setenv("GEMZ_CANON32", json.dumps([sys.executable, "-m", "gemz_studio.camera.bridge32", "--fake"]))
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parent.parent))
-    received, states, frames = [], [], []
+    received, states, frames, settings = [], [], [], []
     cam = BridgeCamera(tmp_path / "recus", "")
     cam.on_file = received.append
-    worker = CameraWorker(cam, lambda ok, text: states.append((ok, text)), frames.append, lambda text: None)
+    worker = CameraWorker(cam, lambda ok, text: states.append((ok, text)), frames.append, lambda text: None,
+                          settings.append)
     worker.start()
     deadline = time.monotonic() + 10
     while not states and time.monotonic() < deadline:
         time.sleep(0.05)
     assert states and states[0][0], states
+    worker.send("set_setting", "tv", 0x78)
     worker.send("capture")
     while not received and time.monotonic() < deadline:
         time.sleep(0.05)
     worker.stop()
     assert received and Path(received[0]).name == "IMG_0001.JPG"
+    assert settings and settings[-1]["tv"]["value"] == 0x78
     assert frames and frames[0][:2] == b"\xff\xd8"  # images JPEG de la visée
     assert cam.process is None  # module 32 bits arrêté proprement
+
+
+def test_libelles_des_reglages():
+    from gemz_studio.camera.props import label
+
+    assert label("iso", 0x48) == "100"
+    assert label("av", 0x30) == "f/5.6"
+    assert label("av", 0x31) == "f/5.9"  # code inconnu : calculé
+    assert label("tv", 0x70) == "1/125"
+    assert label("tv", 0x38) == "1\""
+    assert label("ev", 0x0B) == "+1 1/3"
+    assert label("ev", 0xFD) == "-1/3"
+    assert label("ev", 0) == "0"
+    assert label("mode", 3) == "M"
+
+
+def test_reglages_par_le_worker(tmp_path):
+    settings = []
+    cam = FakeCamera(tmp_path)
+    worker = CameraWorker(cam, lambda ok, text: None, lambda frame: None, lambda text: None, settings.append)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not settings and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert settings[0]["iso"]["value"] == 0x48
+    worker.send("set_setting", "iso", 0x58)
+    worker.send("focus_at", 0.2, 0.7)
+    while len(settings) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    worker.stop()
+    assert settings[-1]["iso"]["value"] == 0x58
+    assert cam.focus_point == (0.2, 0.7)

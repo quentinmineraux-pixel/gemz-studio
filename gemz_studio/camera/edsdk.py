@@ -15,6 +15,7 @@ from ctypes import POINTER, Structure, byref, c_char, c_int32, c_uint32, c_uint6
 from pathlib import Path
 
 from .base import CameraBackend, CameraDisconnected, CameraError
+from .props import KELVIN_CHOICES, PROP_IDS, PROP_KEYS, SETTINGS
 
 # --- constantes EDSDK (EDSDKTypes.h) ---------------------------------------
 EDS_ERR_OK = 0x00000000
@@ -33,7 +34,10 @@ kEdsSaveTo_Host = 2
 kEdsPropID_Evf_OutputDevice = 0x00000500
 kEdsPropID_Evf_Mode = 0x00000501
 kEdsPropID_Evf_Zoom = 0x00000507
+kEdsPropID_Evf_ZoomPosition = 0x00000508
 kEdsPropID_Record = 0x00000510
+kEdsPropID_Evf_CoordinateSystem = 0x00000540
+kEdsPropID_Evf_ZoomRect = 0x00000541
 kEdsEvfOutputDevice_PC = 2
 kEdsRecord_Start = 4
 kEdsRecord_Stop = 0
@@ -49,6 +53,8 @@ kEdsObjectEvent_All = 0x00000200
 kEdsObjectEvent_DirItemCreated = 0x00000204
 kEdsObjectEvent_DirItemRequestTransfer = 0x00000208
 kEdsStateEvent_All = 0x00000300
+kEdsPropertyEvent_All = 0x00000100
+kEdsPropertyEvent_PropertyDescChanged = 0x00000102
 kEdsStateEvent_Shutdown = 0x00000301
 
 kEdsFileCreateDisposition_CreateAlways = 1
@@ -62,6 +68,22 @@ MOVIE_EXT = {".mov", ".mp4"}
 
 class EdsCapacity(Structure):
     _fields_ = [("numberOfFreeClusters", c_int32), ("bytesPerSector", c_int32), ("reset", c_int32)]
+
+
+class EdsPropertyDesc(Structure):
+    _fields_ = [("form", c_int32), ("access", c_int32), ("numElements", c_int32), ("propDesc", c_int32 * 128)]
+
+
+class EdsPoint(Structure):
+    _fields_ = [("x", c_int32), ("y", c_int32)]
+
+
+class EdsSize(Structure):
+    _fields_ = [("width", c_int32), ("height", c_int32)]
+
+
+class EdsRect(Structure):
+    _fields_ = [("x", c_int32), ("y", c_int32), ("width", c_int32), ("height", c_int32)]
 
 
 class _DirItemInfo64(Structure):  # EDSDK 13.x : taille sur 64 bits
@@ -92,6 +114,7 @@ else:  # permet d'importer le module (tests) hors de Windows
     _CALLBACK = ctypes.CFUNCTYPE
 ObjectHandler = _CALLBACK(c_uint32, c_uint32, c_void_p, c_void_p)
 StateHandler = _CALLBACK(c_uint32, c_uint32, c_uint32, c_void_p)
+PropertyHandler = _CALLBACK(c_uint32, c_uint32, c_uint32, c_uint32, c_void_p)
 
 
 def find_edsdk_dll(folder: str | Path) -> Path | None:
@@ -146,6 +169,11 @@ class EdsdkCamera(CameraBackend):
         self._dll_dir_handle = None
         self._last_keepalive = 0.0
         self.downloads = 0
+        self.zoom = 1
+        self._settings_changed = False
+        self._evf_size: tuple[int, int] | None = None       # repère du capteur pour la visée
+        self._evf_rect: tuple[int, int, int, int] | None = None  # zone affichée (ou cadre AF en x1)
+        self._af_frame: tuple[int, int] | None = None
 
     # --- outils ------------------------------------------------------------
     def _check(self, err: int, what: str) -> None:
@@ -215,9 +243,11 @@ class EdsdkCamera(CameraBackend):
             self.sdk.EdsRelease(cam_list)
 
         self.camera = camera
-        self._handlers = [ObjectHandler(self._on_object_event), StateHandler(self._on_state_event)]
+        self._handlers = [ObjectHandler(self._on_object_event), StateHandler(self._on_state_event),
+                          PropertyHandler(self._on_property_event)]
         self.sdk.EdsSetObjectEventHandler(self.camera, kEdsObjectEvent_All, self._handlers[0], None)
         self.sdk.EdsSetCameraStateEventHandler(self.camera, kEdsStateEvent_All, self._handlers[1], None)
+        self.sdk.EdsSetPropertyEventHandler(self.camera, kEdsPropertyEvent_All, self._handlers[2], None)
         err = self.sdk.EdsOpenSession(self.camera)
         if err != EDS_ERR_OK:
             self.sdk.EdsRelease(self.camera)
@@ -293,6 +323,12 @@ class EdsdkCamera(CameraBackend):
             self.connected = False
         return EDS_ERR_OK
 
+    def _on_property_event(self, event, prop, _param, _ctx):
+        # Molette tournée sur le boîtier, ou choix possibles modifiés (changement de mode)
+        if prop in PROP_KEYS or event == kEdsPropertyEvent_PropertyDescChanged:
+            self._settings_changed = True
+        return EDS_ERR_OK
+
     def _item_info(self, item) -> tuple[str | None, int, bool]:
         raw = (c_char * 512)()
         self._check(self.sdk.EdsGetDirectoryItemInfo(item, raw), "infos du fichier")
@@ -362,6 +398,7 @@ class EdsdkCamera(CameraBackend):
             if err in (EDS_ERR_OBJECT_NOTREADY, EDS_ERR_DEVICE_BUSY):
                 return None
             self._check(err, "visée en direct")
+            self._read_evf_geometry(evf)
             length = c_uint64(0)
             pointer = c_void_p()
             self.sdk.EdsGetLength(stream, byref(length))
@@ -375,7 +412,64 @@ class EdsdkCamera(CameraBackend):
             if stream:
                 self.sdk.EdsRelease(stream)
 
+    def _read_evf_geometry(self, evf) -> None:
+        size, rect = EdsSize(), EdsRect()
+        if self.sdk.EdsGetPropertyData(evf, kEdsPropID_Evf_CoordinateSystem, 0, ctypes.sizeof(size), byref(size)) == EDS_ERR_OK:
+            self._evf_size = (size.width, size.height)
+        if self.sdk.EdsGetPropertyData(evf, kEdsPropID_Evf_ZoomRect, 0, ctypes.sizeof(rect), byref(rect)) == EDS_ERR_OK:
+            self._evf_rect = (rect.x, rect.y, rect.width, rect.height)
+            if self.zoom == 1 and rect.width > 0:
+                self._af_frame = (rect.width, rect.height)
+
+    # --- réglages de prise de vue ------------------------------------------
+    def get_settings(self) -> dict:
+        out = {}
+        for key, prop, _title in SETTINGS:
+            try:
+                value = self._get_u32(prop)
+            except CameraDisconnected:
+                raise
+            except CameraError:
+                continue  # réglage absent sur ce boîtier
+            desc = EdsPropertyDesc()
+            choices = []
+            if self.sdk.EdsGetPropertyDesc(self.camera, prop, byref(desc)) == EDS_ERR_OK:
+                choices = [desc.propDesc[i] & 0xFFFFFFFF for i in range(max(0, min(desc.numElements, 128)))]
+            if key == "kelvin" and not choices:
+                choices = list(KELVIN_CHOICES)
+            out[key] = {"value": value, "choices": choices}
+        return out
+
+    def set_setting(self, key: str, value: int) -> None:
+        try:
+            self._set_u32(PROP_IDS[key], int(value))
+        except CameraDisconnected:
+            raise
+        except CameraError as e:
+            raise CameraError("Réglage refusé par l'appareil : pour tout régler, mets la molette du boîtier sur M.") from e
+
+    def take_settings_changed(self) -> bool:
+        changed, self._settings_changed = self._settings_changed, False
+        return changed
+
     # --- mise au point -----------------------------------------------------
+    def focus_at(self, fx: float, fy: float) -> None:
+        """Mise au point sur un point de la visée (fractions 0..1 de l'image affichée)."""
+        if not self._evf_size:
+            raise CameraError("Visée pas encore prête pour la mise au point au clic.")
+        width, height = self._evf_size
+        if self.zoom > 1 and self._evf_rect:
+            x0, y0, w, h = self._evf_rect
+            tx, ty = x0 + fx * w, y0 + fy * h
+        else:
+            tx, ty = fx * width, fy * height
+        fw, fh = self._af_frame or (width // 5, height // 5)
+        point = EdsPoint(int(min(max(tx - fw / 2, 0), width - fw)), int(min(max(ty - fh / 2, 0), height - fh)))
+        self._retry_busy(lambda: self.sdk.EdsSetPropertyData(self.camera, kEdsPropID_Evf_ZoomPosition, 0,
+                                                            ctypes.sizeof(point), byref(point)), "déplacement du collimateur")
+        self.autofocus()
+        self.on_status("Mise au point faite sur la zone cliquée")
+
     def autofocus(self) -> None:
         self._retry_busy(lambda: self._command(kEdsCameraCommand_DoEvfAf, 1), "mise au point")
         time.sleep(0.8)
@@ -386,7 +480,8 @@ class EdsdkCamera(CameraBackend):
             self._retry_busy(lambda: self._command(kEdsCameraCommand_DriveLensEvf, FOCUS_STEPS[step]), "mise au point manuelle")
 
     def set_zoom(self, zoom: int) -> None:
-        self._set_u32(kEdsPropID_Evf_Zoom, zoom if zoom in (1, 5, 10) else 1)
+        self.zoom = zoom if zoom in (1, 5, 10) else 1
+        self._set_u32(kEdsPropID_Evf_Zoom, self.zoom)
 
     # --- prise de vue ------------------------------------------------------
     def capture(self) -> None:

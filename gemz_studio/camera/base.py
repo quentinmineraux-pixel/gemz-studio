@@ -50,6 +50,17 @@ class CameraBackend:
         """step de -3 (plus près, grand pas) à +3 (plus loin, grand pas)."""
     def set_zoom(self, zoom: int) -> None:
         """1, 5 ou 10 (loupe de la visée)."""
+    def focus_at(self, fx: float, fy: float) -> None:
+        """Mise au point sur un point cliqué de la visée (fractions 0..1 de l'image)."""
+
+    # Réglages de prise de vue (clés et codes : voir props.py)
+    def get_settings(self) -> dict:
+        """{clé: {"value": code, "choices": [codes]}} ; choices vide = réglage non modifiable."""
+        return {}
+    def set_setting(self, key: str, value: int) -> None: ...
+    def take_settings_changed(self) -> bool:
+        """Vrai si un réglage a changé sur le boîtier depuis le dernier appel."""
+        return False
 
     # Prise de vue
     def capture(self) -> None:
