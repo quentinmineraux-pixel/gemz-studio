@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 from .catalog import EPUISE, PUBLIE, Catalog, CatalogItem
@@ -199,3 +200,46 @@ def link_etsy(catalog: Catalog, match: Match) -> None:
             state.extra["stock_a_envoyer"] = True   # vendu sur Shopify entre-temps : l'annonce Etsy sera désactivée
     catalog.update(match.item.sku, apply)
     catalog.log("info", f"Annonce Etsy reliée ({match.method})", match.item.sku, "etsy", {"etsy": match.etsy.remote_id})
+
+
+def adopt_etsy_defaults(catalog: Catalog, etsy_listings: list[RemoteListing], settings: Settings) -> list[str]:
+    """Reprend les réglages des annonces Etsy existantes (catégorie par type, expédition, retours, langue…)
+    pour les réglages encore vides ; renvoie ce qui a été rempli."""
+    by_id = {r.remote_id: r for r in etsy_listings}
+    linked = [(item, by_id[item.state("etsy").remote_id]) for item in catalog.all()
+              if item.state("etsy").remote_id in by_id]
+    if not linked:
+        return []
+    filled: list[str] = []
+
+    def common(values):
+        values = [v for v in values if v not in (None, "", 0)]
+        return Counter(values).most_common(1)[0][0] if values else None
+
+    for kind in settings.kinds:
+        if not kind.etsy_taxonomy_id:
+            taxonomy = common([r.extra.get("taxonomy_id") for item, r in linked if item.kind_id == kind.id])
+            if taxonomy:
+                kind.etsy_taxonomy_id = int(taxonomy)
+                filled.append(f"catégorie Etsy « {kind.label} »")
+    listings = [r for _item, r in linked]
+    for attr, key, label in (("etsy_shipping_profile_id", "shipping_profile_id", "profil d'expédition"),
+                             ("etsy_return_policy_id", "return_policy_id", "politique de retour")):
+        value = common([r.extra.get(key) for r in listings])
+        if value and not getattr(settings, attr):
+            setattr(settings, attr, str(value))
+            filled.append(label)
+    who, when = common([r.extra.get("who_made") for r in listings]), common([r.extra.get("when_made") for r in listings])
+    if who and who != settings.etsy_who_made:
+        settings.etsy_who_made = who
+        filled.append("« qui l'a fabriqué »")
+    if when and when != settings.etsy_when_made:
+        settings.etsy_when_made = when
+        filled.append("date de fabrication")
+    language = common([(r.extra.get("language") or "")[:2] for r in listings])
+    if language in ("fr", "en", "es", "de") and language != settings.etsy_shop_language:
+        settings.etsy_shop_language = language
+        filled.append("langue de la boutique")
+    if filled:
+        settings.save()
+    return filled

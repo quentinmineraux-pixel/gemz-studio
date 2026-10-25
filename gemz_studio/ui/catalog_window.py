@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..catalog import A_PUBLIER, EPUISE, ERREUR, PLATFORM_LABELS, PLATFORMS, PUBLIE, STATE_LABELS
-from ..importer import import_shopify, link_etsy, match_etsy
+from ..importer import adopt_etsy_defaults, import_shopify, link_etsy, match_etsy
 from .common import run_in_background
 from .listing_editor import ListingEditor
 
@@ -267,14 +267,20 @@ class CatalogWindow(QWidget):
                 QMessageBox.warning(self, "Etsy", str(error))
                 return
             matches = match_etsy(self.app.catalog, result)
-            if not matches:
-                QMessageBox.information(self, "Etsy", "Toutes les annonces Etsy sont déjà reliées.")
-                return
-            dialog = MatchDialog(matches, self)
-            if dialog.exec() == QDialog.Accepted:
-                for match in dialog.chosen():
-                    link_etsy(self.app.catalog, match)
-                self.app.engine.wake()
+            if matches:
+                dialog = MatchDialog(matches, self)
+                if dialog.exec() == QDialog.Accepted:
+                    for match in dialog.chosen():
+                        link_etsy(self.app.catalog, match)
+            # Catégories, expédition, retours… repris des annonces existantes pour les nouvelles annonces
+            filled = adopt_etsy_defaults(self.app.catalog, result, self.app.settings)
+            if filled:
+                self.app.engine.update_settings(self.app.settings)
+            text = "Toutes les annonces Etsy sont reliées." if not matches else "Liaison terminée."
+            if filled:
+                text += "\n\nRepris de tes annonces Etsy : " + ", ".join(filled) + "."
+            QMessageBox.information(self, "Etsy", text)
+            self.app.engine.wake()
             self.refresh()
 
         run_in_background(etsy.list_listings, done)

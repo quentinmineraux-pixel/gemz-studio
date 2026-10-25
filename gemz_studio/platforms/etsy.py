@@ -274,7 +274,7 @@ class Etsy(Platform):
         if not state.remote_id:
             body = {
                 "quantity": max(1, item.stock), "title": title, "description": description,
-                "price": self._price(item), "who_made": "i_did", "when_made": self.settings.etsy_when_made,
+                "price": self._price(item), "who_made": self.settings.etsy_who_made, "when_made": self.settings.etsy_when_made,
                 "taxonomy_id": kind.etsy_taxonomy_id, "is_supply": False, "type": "physical",
                 "shipping_profile_id": int(self.settings.etsy_shipping_profile_id),
                 "return_policy_id": int(self.settings.etsy_return_policy_id),
@@ -401,7 +401,9 @@ class Etsy(Platform):
                     price=float(price.get("amount", 0)) / float(price.get("divisor", 100) or 100),
                     url=listing.get("url", ""), tags=list(listing.get("tags") or []),
                     description=listing.get("description", ""),
-                    image_urls=[img.get("url_fullxfull", "") for img in listing.get("images") or []]))
+                    image_urls=[img.get("url_fullxfull", "") for img in listing.get("images") or []],
+                    extra={k: listing.get(k) for k in ("taxonomy_id", "shipping_profile_id", "return_policy_id",
+                                                        "who_made", "when_made", "language")}))
             offset += 100
             if offset >= int(data.get("count", 0)):
                 return out

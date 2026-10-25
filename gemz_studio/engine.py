@@ -125,7 +125,8 @@ class Engine:
     def publish_one(self, item: CatalogItem, name: str) -> None:
         platform = self.platforms[name]
         state = replace(item.state(name))
-        was_update = state.status == A_METTRE_A_JOUR or bool(state.remote_id and state.status == PUBLIE)
+        # Annonce déjà en ligne (même après une erreur) : on la met à jour, on n'en crée jamais une seconde
+        was_update = bool(state.remote_id) or state.status == A_METTRE_A_JOUR
         label = PLATFORM_LABELS[name]
         english = name == "etsy" and self.settings.etsy_shop_language == "en" or \
             name == "ebay" and "EBAY_US" in self.settings.ebay_marketplaces

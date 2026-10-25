@@ -195,3 +195,31 @@ def test_import_retrouve_poids_et_provenance():
                      "nom": "Vanadinite sur baryte en éventail", "dimensions": "6x4x3"}
     facts = facts_from_shopify("Hémimorphite bleu turquoise, cristaux en relief – Congo – 71,8 g", "")
     assert facts["poids_g"] == "71,8" and facts["pays"] == "Congo" and facts["variete"] == "cristaux en relief"
+
+
+def test_annonce_existante_en_erreur_est_mise_a_jour(setup):
+    settings, catalog, engine = setup
+    item = make_item(settings)
+    item.state("shopify").status, item.state("shopify").remote_id = PUBLIE, "gid://1"
+    item.state("etsy").status, item.state("etsy").remote_id = ERREUR, "123"
+    catalog.put(item)
+    calls = []
+    engine.platforms["etsy"].publish = lambda it, st: calls.append("publish")
+    engine.platforms["etsy"].update = lambda it, st: calls.append("update")
+    engine.process_queue()
+    assert calls == ["update"]
+
+
+def test_reglages_etsy_repris_des_annonces(setup):
+    from gemz_studio.importer import adopt_etsy_defaults
+    settings, catalog, engine = setup
+    item = make_item(settings)
+    item.state("etsy").remote_id = "55"
+    catalog.put(item)
+    remote = RemoteListing(platform="etsy", remote_id="55", title="x", extra={
+        "taxonomy_id": 1234, "shipping_profile_id": 9, "return_policy_id": 8, "who_made": "someone_else",
+        "when_made": "made_to_order", "language": "fr"})
+    filled = adopt_etsy_defaults(catalog, [remote], settings)
+    assert settings.kind("mineral-collection").etsy_taxonomy_id == 1234
+    assert settings.etsy_shipping_profile_id == "9" and settings.etsy_who_made == "someone_else"
+    assert filled

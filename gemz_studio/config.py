@@ -116,6 +116,7 @@ class Settings:
     etsy_shipping_profile_id: str = ""
     etsy_return_policy_id: str = ""
     etsy_when_made: str = "made_to_order"
+    etsy_who_made: str = "i_did"
     etsy_readiness_state_id: str = ""
     etsy_shop_language: str = "fr"     # langue de la boutique Etsy (StoreGemZ : français) ; les autres en traductions
     ebay_marketplaces: list[str] = field(default_factory=lambda: ["EBAY_FR", "EBAY_US"])
