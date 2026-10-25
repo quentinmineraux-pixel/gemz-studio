@@ -9,7 +9,7 @@ import webbrowser
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox, QStyle, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 
@@ -37,12 +37,24 @@ class SecretField(QLineEdit):
         super().__init__()
         self.name = name
         self.setEchoMode(QLineEdit.Password)
+        self.cleared = False
         stored = bool(vault.get(name))
         self.setPlaceholderText("•••••• enregistré (laisser vide pour garder)" if stored else placeholder)
+        if stored:
+            erase = self.addAction(self.style().standardIcon(QStyle.SP_DialogDiscardButton), QLineEdit.TrailingPosition)
+            erase.setToolTip("Effacer la valeur enregistrée")
+            erase.triggered.connect(self._clear)
+
+    def _clear(self) -> None:
+        self.cleared = True
+        self.clear()
+        self.setPlaceholderText("sera effacé à l'enregistrement")
 
     def collect(self, into: dict[str, str]) -> None:
         if self.text().strip():
             into[self.name] = self.text().strip()
+        elif self.cleared:
+            into[self.name] = ""   # vide = retiré du coffre
 
 
 def money_spin(value: float, maximum: float = 1000, suffix: str = " €", decimals: int = 2) -> QDoubleSpinBox:

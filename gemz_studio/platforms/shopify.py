@@ -170,8 +170,9 @@ class Shopify(Platform):
     def token(self) -> str:
         if not self.configured():
             raise NotConfigured(self.missing_setup())
+        # Identifiant + secret de l'application (Dev Dashboard) d'abord ; le jeton shpat_ fixe seulement sans eux
         static = vault.get(SECRET_TOKEN)
-        if static:
+        if static and not (vault.get(SECRET_CLIENT_ID) and vault.get(SECRET_CLIENT_SECRET)):
             return static
         with self._lock:
             if self._token and time.time() < self._token_expires - 300:
@@ -180,7 +181,8 @@ class Shopify(Platform):
                         data={"grant_type": "client_credentials", "client_id": vault.get(SECRET_CLIENT_ID),
                               "client_secret": vault.get(SECRET_CLIENT_SECRET)})
             if r.status_code != 200:
-                raise PlatformError(f"Shopify refuse la connexion ({r.status_code}) : vérifie l'identifiant et le secret.")
+                raise PlatformError(f"Shopify refuse la connexion ({r.status_code}) : vérifie l'identifiant, le secret "
+                                    f"et que l'application est bien installée sur la boutique. {r.text[:200]}")
             data = r.json()
             self._token = data["access_token"]
             self._token_expires = time.time() + float(data.get("expires_in", 86399))
@@ -193,8 +195,10 @@ class Shopify(Platform):
                         headers={"X-Shopify-Access-Token": self.token(), "Content-Type": "application/json"})
             if r.status_code in (401, 403):
                 self._token = ""
-                raise PlatformError("Shopify refuse l'accès : droits de l'application à vérifier "
-                                    "(produits, stock, commandes, traductions, publications).")
+                raise PlatformError(f"Shopify refuse l'accès ({r.status_code}) : "
+                                    + ("jeton refusé, vérifie l'identifiant et le secret." if r.status_code == 401 else
+                                       "droits de l'application à vérifier (produits, stock, commandes, traductions, "
+                                       "publications).") + f" {r.text[:200]}")
             if r.status_code != 200:
                 raise PlatformError(f"Erreur Shopify {r.status_code} : {r.text[:300]}", retryable=r.status_code >= 500)
             body = r.json()
