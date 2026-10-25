@@ -54,6 +54,9 @@ def make_item(settings, sku="MFC1", etsy=True, ebay=False, ready=True):
     info = ProductInfo(nom="malachite", pays="congo", prix="150", poids_g="120")
     item = CatalogItem(sku=sku, kind_id="mineral-collection", info=info,
                        listing=build_listing(info, settings.kind("mineral-collection"), settings))
+    if ready:
+        for lang in ("fr", "en"):
+            item.listing.pieces[lang].update(aspect="Fibres vertes.", lithotherapie="Pierre de protection.")
     item.listing.ready = ready
     item.state("shopify").wanted = True
     item.state("etsy").wanted = etsy
@@ -160,3 +163,24 @@ def test_import_shopify_et_liaison_etsy(setup):
     link_etsy(catalog, matches["111"])
     assert catalog.get("VABM11").state("etsy").remote_id == "111"
     assert catalog.find_remote("etsy", "111").sku == "VABM11"
+
+
+def test_etsy_attend_les_textes_anglais(setup):
+    settings, catalog, engine = setup
+    item = make_item(settings)
+    item.listing.pieces["en"] = {}
+    catalog.put(item)
+    engine.process_queue()
+    engine.process_queue()
+    assert engine.platforms["shopify"].published == ["MFC1"]
+    assert engine.platforms["etsy"].published == []
+    assert "anglais" in catalog.get("MFC1").state("etsy").error
+
+
+def test_import_avance_les_numeros_de_sku(setup):
+    settings, catalog, engine = setup
+    remote = RemoteListing(platform="shopify", remote_id="gid://shopify/Product/1", title="Malachite", skus=["MFC42"], price=90.0,
+                           quantity=1)
+    import_shopify(catalog, [remote], settings)
+    assert settings.sku_counters["MFC"] == 42
+    assert settings.next_sku_number("MFC") == 43

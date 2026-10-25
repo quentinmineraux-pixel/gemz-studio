@@ -6,7 +6,40 @@ import sys
 from pathlib import Path
 
 from PIL import Image
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap
+
+_RUNNING: set = set()
+
+
+class _Done(QObject):
+    finished = Signal(object, object)   # résultat, exception
+
+
+class _Task(QRunnable):
+    def __init__(self, fn, done: _Done):
+        super().__init__()
+        self.fn, self.done = fn, done
+
+    def run(self) -> None:
+        try:
+            result, error = self.fn(), None
+        except Exception as e:  # noqa: BLE001 - renvoyée à l'interface
+            result, error = None, e
+        self.done.finished.emit(result, error)
+
+
+def run_in_background(fn, on_done) -> None:
+    """Lance fn() hors de l'interface (réseau, IA) ; on_done(résultat, erreur) revient dans l'interface."""
+    done = _Done()
+    _RUNNING.add(done)
+
+    def finish(result, error):
+        _RUNNING.discard(done)
+        on_done(result, error)
+
+    done.finished.connect(finish)
+    QThreadPool.globalInstance().start(_Task(fn, done))
 
 
 def pil_to_pixmap(img: Image.Image) -> QPixmap:

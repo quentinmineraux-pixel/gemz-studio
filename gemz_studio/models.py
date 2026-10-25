@@ -60,6 +60,7 @@ class ProductInfo:
     # plateformes en plus de Shopify (toujours publié)
     publier_etsy: bool = True
     publier_ebay: bool = False
+    plateformes_choisies: bool = False   # sinon, cases cochées selon les réglages
 
     def missing_required(self) -> list[str]:
         missing = []

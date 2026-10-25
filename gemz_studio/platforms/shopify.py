@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import threading
 import time
 import uuid
@@ -105,6 +106,10 @@ query GemzOrders($query: String!, $after: String) {
     }
   }
 }"""
+
+SKU_TAKEN = """
+query($q: String!) { productVariants(first: 1, query: $q) { nodes { sku product { id title } } } }
+"""
 
 PRODUCTS = """
 query GemzProducts($after: String) {
@@ -282,6 +287,13 @@ class Shopify(Platform):
                 "seo": {"title": fr.seo_title, "description": fr.seo_description}, "metafields": metafields}
 
     def publish(self, item: CatalogItem, state: PlatformState) -> None:
+        if not state.remote_id and not state.extra.get("uploaded"):
+            # SKU déjà pris par un produit existant (créé à la main) : on ne crée pas de doublon
+            taken = self.graphql(SKU_TAKEN, {"q": f"sku:{item.sku}"})["productVariants"]["nodes"]
+            base = re.sub(r"-(T\d{2}|\d{2,3}|US)$", "", (taken[0]["sku"] or "").upper()) if taken else ""
+            if base == item.sku.upper():
+                raise PlatformError(f"Le SKU {item.sku} existe déjà sur Shopify (« {taken[0]['product']['title']} ») : "
+                                    "change le SKU ou importe ce produit depuis le catalogue.")
         kind = self.settings.kind(item.kind_id)
         fields = self._product_fields(item, kind)
         options, variants = self._variants(item, kind.form)
@@ -327,6 +339,8 @@ class Shopify(Platform):
         digests = {c["key"]: c["digest"] for c in content}
         translations = []
         for lang in wanted:
+            if not item.listing.has_lang(lang):
+                continue
             text = item.listing.texts[lang]
             for key, attr in TRANSLATION_KEYS.items():
                 value = getattr(text, attr)

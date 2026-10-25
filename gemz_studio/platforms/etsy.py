@@ -114,7 +114,6 @@ class Etsy(Platform):
         if not me.get("shop_id"):
             raise PlatformError("Ce compte Etsy n'a pas de boutique.")
         self.settings.etsy_shop_id = str(me["shop_id"])
-        self.settings.save()
         shop = self.call("GET", f"/shops/{self.settings.etsy_shop_id}")
         return shop.get("shop_name", "")
 
@@ -264,7 +263,7 @@ class Etsy(Platform):
 
     def _translate(self, item: CatalogItem, listing_id: str, primary: str) -> None:
         for lang in LANGS:
-            if lang == primary:
+            if lang == primary or not item.listing.has_lang(lang):
                 continue
             title, description = self._texts(item, lang)
             try:

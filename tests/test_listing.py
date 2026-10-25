@@ -58,7 +58,7 @@ def test_fiche_sans_ia_a_completer():
     listing = build_listing(info, s.kind("mineral-collection"), s)
     assert listing.texts["fr"].title == "Malachite fibreuse – Afrique du Sud – 120 g"
     assert listing.texts["en"].title == "Malachite fibreuse – South Africa – 120 g"
-    assert not listing.ready and "aspect (fr)" in listing.missing()
+    assert not listing.ready and "aspect" in listing.missing()
     assert "afrique-du-sud" in listing.tags
 
 

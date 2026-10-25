@@ -10,18 +10,23 @@ from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QMessageBox, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..camera import MODE_FOLDER, CameraError, make_backend
+from ..catalog import Catalog
 from ..config import APP_NAME, Settings, data_dir
+from ..engine import Engine
 from ..grouping import Grouper
 from ..imaging import render_web, thumbnail
 from ..models import VIDEO_EXT, A_COMPLETER, EN_PRISE, EN_TRAITEMENT, ERREUR, PRET, STATUS_LABELS, Session
 from ..processing import process_product
+from ..publishing import register_product
 from ..watcher import FolderWatcher
 from .camera_panel import CameraPanel
+from .catalog_window import CatalogWindow
 from .common import open_in_explorer, pil_to_pixmap, video_icon, video_thumbnail_icon
+from .listing_editor import ListingEditor
 from .product_form import ProductForm
 from .settings_dialog import SettingsDialog
 
@@ -37,21 +42,30 @@ def card_name(path: str) -> str:
 class Bridge(QObject):
     """Ramène les événements des threads de fond vers l'interface."""
     fileArrived = Signal(str)
-    processed = Signal(str, str)   # id produit, message d'erreur ("" si OK)
+    processed = Signal(str, str, str)   # id produit, message d'erreur ("" si OK), remarque sur la fiche
+    status = Signal(str)                 # messages du moteur de publication
+    notice = Signal(str, str)            # titre, texte (notification Windows)
 
 
 class ProcessJob(QRunnable):
-    def __init__(self, bridge: Bridge, product, day: str, settings: Settings):
+    def __init__(self, bridge: Bridge, product, day: str, settings: Settings, catalog: Catalog):
         super().__init__()
-        self.bridge, self.product, self.day, self.settings = bridge, product, day, settings
+        self.bridge, self.product, self.day, self.settings, self.catalog = bridge, product, day, settings, catalog
 
     def run(self) -> None:
         try:
             process_product(self.product, self.day, self.settings)
-            self.bridge.processed.emit(self.product.id, "")
         except Exception as e:  # noqa: BLE001 - l'erreur est affichée sur la fiche
             traceback.print_exc()
-            self.bridge.processed.emit(self.product.id, str(e))
+            self.bridge.processed.emit(self.product.id, str(e), "")
+            return
+        try:
+            # Photos prêtes : fiche rédigée et produit ajouté à la file de publication
+            _item, notice = register_product(self.product, self.settings, self.catalog)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            notice = f"Photos prêtes, mais la fiche n'a pas pu être créée : {e}"
+        self.bridge.processed.emit(self.product.id, "", notice)
 
 
 class PreviewDialog(QDialog):
@@ -81,23 +95,32 @@ class MainWindow(QMainWindow):
         self.watcher: FolderWatcher | None = None
         self.thumbs: dict[str, QIcon] = {}
         self.video_icon = video_icon()
-        self.pool = QThreadPool.globalInstance()
+        self.pool = QThreadPool(self)   # traitements photo ; le réseau passe par le pool global
         self.pool.setMaxThreadCount(2)
         self.bridge = Bridge()
         self.bridge.fileArrived.connect(self._on_file)
         self.bridge.processed.connect(self._on_processed)
+        self.bridge.status.connect(lambda text: self.statusBar().showMessage(text, 15000))
+        self.bridge.notice.connect(self._notify)
+        self.catalog = Catalog()
+        self.engine = Engine(self.settings, self.catalog, on_notify=self.bridge.notice.emit,
+                             on_status=self.bridge.status.emit)
+        self.catalog_window: CatalogWindow | None = None
+        self.tray: QSystemTrayIcon | None = None
 
         self._build_toolbar()
         self._build_body()
+        self._build_tray()
         self._resume_session()
         self._start_camera()
+        self.engine.start()
 
     # --- construction ------------------------------------------------------
     def _build_toolbar(self) -> None:
         bar = self.addToolBar("Séance")
         bar.setMovable(False)
         for text, slot in (("Nouvelle séance", self.new_session), ("Produit suivant", self.next_product),
-                           ("Réglages", self.open_settings)):
+                           ("Catalogue et ventes", self.open_catalog), ("Réglages", self.open_settings)):
             action = QAction(text, self)
             action.triggered.connect(slot)
             bar.addAction(action)
@@ -155,8 +178,37 @@ class MainWindow(QMainWindow):
         self.form.processRequested.connect(self.process)
         self.form.openFolderRequested.connect(self._open_folder)
         self.form.changed.connect(lambda _id: (self._save_session(), self._refresh_products()))
+        self.form.listingRequested.connect(self.open_listing)
+        self.form.settings = self.settings
         splitter.addWidget(self.form)
         splitter.setSizes([280, 800, 420])
+
+    def _build_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self.tray = QSystemTrayIcon(self.windowIcon() if not self.windowIcon().isNull() else self.video_icon, self)
+        self.tray.setToolTip(APP_NAME)
+        self.tray.activated.connect(lambda _reason: (self.showNormal(), self.activateWindow()))
+        self.tray.show()
+
+    def _notify(self, title: str, text: str) -> None:
+        self.statusBar().showMessage(f"{title} : {text}", 30000)
+        if self.tray:
+            self.tray.showMessage(title, text, QSystemTrayIcon.Information, 10000)
+
+    # --- catalogue et fiches ------------------------------------------------
+    def open_catalog(self) -> None:
+        if self.catalog_window is None or not self.catalog_window.isVisible():
+            self.catalog_window = CatalogWindow(self)
+        self.catalog_window.show()
+        self.catalog_window.raise_()
+        self.catalog_window.activateWindow()
+
+    def open_listing(self, sku: str) -> None:
+        if not sku or self.catalog.get(sku) is None:
+            QMessageBox.information(self, APP_NAME, "La fiche apparaît une fois le produit traité.")
+            return
+        ListingEditor(sku, self, self).exec()
 
     # --- séance ------------------------------------------------------------
     def _session_path(self) -> Path:
@@ -402,7 +454,7 @@ class MainWindow(QMainWindow):
         product.error = ""
         self._save_session()
         self._refresh_products()
-        self.pool.start(ProcessJob(self.bridge, product, self.session.day, self.settings))
+        self.pool.start(ProcessJob(self.bridge, product, self.session.day, self.settings, self.catalog))
         self.camera.delete_card_movies([card_name(v) for v in product.videos])
         # On passe directement au produit suivant à compléter
         for i, p in enumerate(self.session.products):
@@ -410,12 +462,17 @@ class MainWindow(QMainWindow):
                 self.products.setCurrentRow(i)
                 break
 
-    def _on_processed(self, product_id: str, error: str) -> None:
+    def _on_processed(self, product_id: str, error: str, notice: str = "") -> None:
         product = self.session.get(product_id) if self.session else None
         if not product:
             return
         if error:
             product.status, product.error = ERREUR, error
+        else:
+            product.error = notice   # ex. clé IA absente : la fiche reste à compléter
+            self.engine.wake()
+            self.statusBar().showMessage(f"{product.display_name()} : photos prêtes, fiche "
+                                         + ("à compléter" if notice else "créée"), 15000)
         self._save_session()
         self._refresh_products()
         if self._current_product() is product:
@@ -430,7 +487,7 @@ class MainWindow(QMainWindow):
     def open_settings(self) -> None:
         product = self._current_product()
         sample = product.photos[0] if product and product.photos else None
-        dialog = SettingsDialog(self.settings, sample, self)
+        dialog = SettingsDialog(self.settings, sample, self, self.catalog)
         if dialog.exec() == QDialog.Accepted:
             old = (self.settings.watch_folder, self.settings.camera_mode, self.settings.edsdk_folder)
             old_folder = old[0]
@@ -439,6 +496,8 @@ class MainWindow(QMainWindow):
             new.sku_counters = dict(self.settings.sku_counters)
             self.settings = new
             self.settings.save()
+            self.form.settings = self.settings
+            self.engine.update_settings(self.settings)
             if self.session:
                 self.grouper.kind = self.settings.kind(self.session.kind_id)
                 self.grouper.auto_split = self.settings.auto_split
@@ -454,4 +513,7 @@ class MainWindow(QMainWindow):
             self.watcher.stop()
         self.camera.stop()
         self.pool.waitForDone(30000)
+        self.engine.stop()
+        if self.tray:
+            self.tray.hide()
         super().closeEvent(event)

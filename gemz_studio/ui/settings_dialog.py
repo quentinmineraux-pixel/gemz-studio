@@ -1,4 +1,4 @@
-"""Réglages : dossiers, watermark, preset de retouche (avec aperçu), types de produits."""
+"""Réglages : studio photo (dossiers, watermark, preset avec aperçu), puis prix, IA, connexions et synchro."""
 from __future__ import annotations
 
 import copy
@@ -8,13 +8,14 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..camera import MODE_CANON, MODE_LABELS
 from ..config import Settings
 from ..imaging import adjust, apply_watermark, load_photo
 from .common import pil_to_pixmap
+from .selling_settings import AiTab, ConnectionsTab, PricesTab, SyncTab
 
 
 class PathPicker(QWidget):
@@ -50,13 +51,17 @@ def ratio_slider(value: float, low: int, high: int) -> QSlider:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: Settings, sample_photo: str | None = None, parent=None):
+    def __init__(self, settings: Settings, sample_photo: str | None = None, parent=None, catalog=None):
         super().__init__(parent)
         self.setWindowTitle("Réglages")
         self.settings = copy.deepcopy(settings)
         self.sample = self._load_sample(sample_photo)
 
-        root = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs, 1)
+        studio = QWidget()
+        root = QHBoxLayout(studio)
         left = QVBoxLayout()
         root.addLayout(left, 1)
 
@@ -142,7 +147,6 @@ class SettingsDialog(QDialog):
         buttons.button(QDialogButtonBox.Cancel).setText("Annuler")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        left.addWidget(buttons)
 
         right = QVBoxLayout()
         right.addWidget(QLabel("Aperçu du rendu final"))
@@ -152,6 +156,12 @@ class SettingsDialog(QDialog):
         right.addWidget(self.preview)
         right.addStretch(1)
         root.addLayout(right, 1)
+        self.tabs.addTab(studio, "Studio photo")
+        self.extra_tabs = [PricesTab(self.settings), AiTab(self.settings, catalog),
+                           ConnectionsTab(self.settings, self._collect), SyncTab(self.settings)]
+        for tab, title in zip(self.extra_tabs, ("Prix et ventes", "IA", "Connexions", "Synchro et notifications")):
+            self.tabs.addTab(tab, title)
+        outer.addWidget(buttons)
 
         self._timer = QTimer(self, singleShot=True, interval=150)
         self._timer.timeout.connect(self._render_preview)
@@ -189,6 +199,8 @@ class SettingsDialog(QDialog):
         for row, kind in enumerate(s.kinds):
             kind.photos_per_product = self.table.cellWidget(row, 1).value()
             kind.videos_per_product = self.table.cellWidget(row, 2).value()
+        for tab in getattr(self, "extra_tabs", []):
+            tab.collect(s)
         return s
 
     def _render_preview(self) -> None:
@@ -200,6 +212,16 @@ class SettingsDialog(QDialog):
             return
         self.preview.setPixmap(pil_to_pixmap(img).scaled(
             self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def accept(self) -> None:
+        # Clés et jetons : coffre chiffré de Windows, jamais dans settings.json
+        from .. import vault
+        values: dict[str, str] = {}
+        for tab in self.extra_tabs:
+            tab.secrets(values)
+        if values:
+            vault.set_many(values)
+        super().accept()
 
     def result_settings(self) -> Settings:
         return self._collect()

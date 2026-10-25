@@ -63,7 +63,20 @@ def import_shopify(catalog: Catalog, listings: list[RemoteListing], settings: Se
         catalog.put(item)
         skus.add(sku)
         added += 1
+    bump_sku_counters(settings, [s for r in listings for s in r.skus])
     return added
+
+
+def bump_sku_counters(settings: Settings, skus: list[str]) -> None:
+    """Les numéros déjà pris sur la boutique (MFC1…MFC42) ne seront jamais redonnés à un nouveau produit."""
+    changed = False
+    for sku in skus:
+        match = re.match(r"^([A-Z]+)(\d+)(?:-.*)?$", sku.strip().upper())
+        if match and int(match.group(2)) > settings.sku_counters.get(match.group(1), 0):
+            settings.sku_counters[match.group(1)] = int(match.group(2))
+            changed = True
+    if changed:
+        settings.save()
 
 
 @dataclass

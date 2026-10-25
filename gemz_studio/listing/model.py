@@ -53,14 +53,22 @@ class Listing:
         listing.pieces = {lang: dict(listing.pieces.get(lang, {})) for lang in LANGS}
         return listing
 
+    def has_lang(self, lang: str) -> bool:
+        """Textes rédigés dans cette langue (sinon l'aperçu reprend le français, qui n'est pas envoyé)."""
+        p = self.pieces.get(lang, {})
+        return all(p.get(key, "").strip() for key in ("aspect", "lithotherapie"))
+
     def missing(self) -> list[str]:
-        """Ce qui manque avant publication (vide = fiche complète)."""
+        """Ce qui manque avant publication sur Shopify (vide = fiche complète).
+
+        Les autres langues sont facultatives : non rédigées, elles ne sont simplement pas envoyées
+        (sauf l'anglais pour Etsy et ebay.com, vérifié au moment de publier).
+        """
         out = []
-        for lang in LANGS:
-            p = self.pieces.get(lang, {})
-            for key in ("aspect", "lithotherapie"):
-                if not p.get(key, "").strip():
-                    out.append(f"{key} ({lang})")
+        p = self.pieces.get("fr", {})
+        for key in ("aspect", "lithotherapie"):
+            if not p.get(key, "").strip():
+                out.append(key)
         if not self.texts["fr"].title.strip():
             out.append("titre")
         return out
