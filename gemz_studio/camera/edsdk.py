@@ -110,12 +110,33 @@ def find_edsdk_dll(folder: str | Path) -> Path | None:
     return candidates[0]
 
 
+def dll_bits(path: str | Path) -> int | None:
+    """32 ou 64 selon l'en-tête PE de la DLL (None si illisible)."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+        pe = int.from_bytes(head[0x3C:0x40], "little")
+        if head[:2] != b"MZ" or head[pe:pe + 4] != b"PE\0\0":
+            return None
+        machine = int.from_bytes(head[pe + 4:pe + 6], "little")
+    except (OSError, ValueError):
+        return None
+    return {0x14C: 32, 0x8664: 64, 0xAA64: 64}.get(machine)
+
+
 class EdsdkCamera(CameraBackend):
     def __init__(self, download_dir, sdk_folder: str | Path):
         super().__init__(download_dir)
         dll = find_edsdk_dll(sdk_folder)
         if dll is None:
             raise CameraError("EDSDK.dll introuvable : vérifie le dossier du kit Canon dans les réglages.")
+        want = 64 if sys.maxsize > 2**32 else 32
+        bits = dll_bits(dll)
+        if bits is not None and bits != want:
+            raise CameraError(
+                f"Ce kit Canon est en {bits} bits ({dll}) alors que GemZ Studio est en {want} bits. "
+                "Télécharge le kit officiel sur le site développeur Canon et choisis le dossier "
+                "qui contient EDSDK_64.")
         self.dll_path = dll
         self.sdk = None
         self.camera = c_void_p()

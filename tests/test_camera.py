@@ -45,3 +45,22 @@ def test_worker_avec_appareil_simule(tmp_path):
     worker.stop()
     assert states[0] is True
     assert [Path(p).name for p in received] == ["IMG_0001.JPG", "IMG_0002.JPG"]
+
+
+def test_dll_bits_reads_pe_header(tmp_path):
+    from gemz_studio.camera.edsdk import dll_bits
+
+    def fake_dll(name, machine):
+        data = bytearray(512)
+        data[:2] = b"MZ"
+        data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        data[0x80:0x84] = b"PE\0\0"
+        data[0x84:0x86] = machine.to_bytes(2, "little")
+        path = tmp_path / name
+        path.write_bytes(bytes(data))
+        return path
+
+    assert dll_bits(fake_dll("a.dll", 0x14C)) == 32
+    assert dll_bits(fake_dll("b.dll", 0x8664)) == 64
+    (tmp_path / "c.dll").write_bytes(b"pas une dll")
+    assert dll_bits(tmp_path / "c.dll") is None
