@@ -46,6 +46,9 @@ class ProductKind:
     videos_per_product: int = 1
     # "mineral", "bague" ou "bracelet" : choisit les champs du formulaire
     form: str = "mineral"
+    # Catégories des places de marché (choisies ensemble au branchement d'Etsy et d'eBay)
+    etsy_taxonomy_id: int = 0
+    ebay_category_id: str = ""
 
 
 DEFAULT_KINDS: list[ProductKind] = [
@@ -88,6 +91,43 @@ class Settings:
     sku_counters: dict[str, int] = field(default_factory=dict)
     kinds: list[ProductKind] = field(default_factory=lambda: [ProductKind(**asdict(k)) for k in DEFAULT_KINDS])
 
+    # --- prix et règles de vente ------------------------------------------
+    etsy_markup: float = 0.0      # % ajouté au prix Shopify (à régler dans les réglages)
+    ebay_markup: float = 0.0
+    usd_per_eur: float = 1.15     # conversion pour ebay.com
+    ring_resize_price: float = 12.0
+    ring_resize_days: int = 5
+    ring_sizes: list[int] = field(default_factory=lambda: list(range(40, 71)))
+    bracelet_sizes: list[str] = field(default_factory=lambda: ["17 cm", "19 cm", "21 cm"])
+    default_etsy: bool = True     # plateformes cochées d'office sur une nouvelle fiche
+    default_ebay: bool = False
+
+    # --- IA (la clé est rangée à part, chiffrée) ---------------------------
+    ai_model: str = "claude-opus-5-5"
+    ai_monthly_cap_eur: float = 5.0
+    ai_photos: int = 3
+    ai_auto: bool = True          # rédiger la fiche dès la fin du traitement des photos
+
+    # --- connexions (identifiants non secrets ; jetons dans secrets.py) ---
+    shopify_domain: str = ""      # ex. gem-z.myshopify.com
+    shopify_location_id: str = ""
+    etsy_shop_id: str = ""
+    etsy_shipping_profile_id: str = ""
+    etsy_return_policy_id: str = ""
+    etsy_when_made: str = "made_to_order"
+    etsy_readiness_state_id: str = ""
+    etsy_language: str = "en"     # langue principale des annonces Etsy (les autres en traductions)
+    ebay_marketplaces: list[str] = field(default_factory=lambda: ["EBAY_FR", "EBAY_US"])
+    ebay_location_key: str = ""
+    ebay_policies: dict[str, dict[str, str]] = field(default_factory=dict)  # place -> fulfillment/payment/return
+    ebay_ru_name: str = ""        # « RuName » de l'application eBay (adresse de retour après connexion)
+
+    # --- synchro du stock et notifications -------------------------------
+    sync_enabled: bool = True
+    sync_minutes: int = 3
+    ntfy_topic: str = ""          # notifications téléphone (application gratuite ntfy)
+    publish_paused: bool = False
+
     def kind(self, kind_id: str) -> ProductKind:
         for k in self.kinds:
             if k.id == kind_id:
@@ -110,10 +150,14 @@ class Settings:
         if not p.exists():
             return cls()
         raw = json.loads(p.read_text(encoding="utf-8"))
-        kinds = [ProductKind(**k) for k in raw.pop("kinds", [])] or None
+        kind_fields = set(ProductKind.__dataclass_fields__)
+        kinds = [ProductKind(**{f: v for f, v in k.items() if f in kind_fields}) for k in raw.pop("kinds", [])] or None
         known = {f for f in cls.__dataclass_fields__}
         s = cls(**{k: v for k, v in raw.items() if k in known})
         if kinds:
+            # Nouveaux types ajoutés depuis la dernière version (ex. fait-main) : ajoutés à la fin
+            known_ids = {k.id for k in kinds}
+            kinds += [ProductKind(**asdict(k)) for k in DEFAULT_KINDS if k.id not in known_ids]
             s.kinds = kinds
         return s
 

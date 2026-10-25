@@ -57,6 +57,9 @@ class ProductInfo:
     pierres: str = ""
     perles_mm: str = ""
     fil: str = ""
+    # plateformes en plus de Shopify (toujours publié)
+    publier_etsy: bool = True
+    publier_ebay: bool = False
 
     def missing_required(self) -> list[str]:
         missing = []
@@ -92,7 +95,8 @@ class Product:
     @classmethod
     def from_dict(cls, raw: dict) -> "Product":
         raw = dict(raw)
-        info = ProductInfo(**raw.pop("info", {}))
+        known = set(ProductInfo.__dataclass_fields__)
+        info = ProductInfo(**{k: v for k, v in raw.pop("info", {}).items() if k in known})
         return cls(info=info, **raw)
 
 
