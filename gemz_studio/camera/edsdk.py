@@ -275,7 +275,10 @@ class EdsdkCamera(CameraBackend):
         raw = (c_char * 512)()
         self._check(self.sdk.EdsGetDirectoryItemInfo(item, raw), "infos du fichier")
         data = bytes(raw)
-        for struct in (_DirItemInfo64, _DirItemInfo32):
+        # Ancienne structure d'abord (kit 3.x, celui de Zawada) : lue sur des données 13.x, elle tombe sur
+        # le champ « option » (souvent nul) et donne un nom invalide, alors que l'inverse peut donner
+        # un nom de dossier tronqué mais plausible (« 100CANON » -> « ANON »)
+        for struct in (_DirItemInfo32, _DirItemInfo64):
             info = struct.from_buffer_copy(data[:ctypes.sizeof(struct)])
             name = _valid_name(info.szFileName)
             if name:

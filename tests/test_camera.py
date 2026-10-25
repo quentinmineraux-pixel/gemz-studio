@@ -21,6 +21,9 @@ def test_lit_le_nom_du_fichier_sur_la_carte():
     assert _valid_name(_DirItemInfo64.from_buffer_copy(old + b"\0" * 8).szFileName) is None
     assert _valid_name(_DirItemInfo32.from_buffer_copy(old).szFileName) == "MVI_0042.MOV"
     assert _valid_name(b"100CANON") == "100CANON"
+    # Kit 13.x lu avec l'ancienne structure (essayée en premier) : rejeté, l'outil passe à la nouvelle
+    new = bytes(_DirItemInfo64(size=123, option=0, szFileName=b"100CANON"))
+    assert _valid_name(_DirItemInfo32.from_buffer_copy(new[:288]).szFileName) is None
 
 
 def test_worker_avec_appareil_simule(tmp_path):
