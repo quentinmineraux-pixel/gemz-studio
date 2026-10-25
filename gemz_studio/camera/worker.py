@@ -19,12 +19,14 @@ class CameraWorker:
                  on_state: Callable[[bool, str], None],
                  on_frame: Callable[[bytes], None],
                  on_status: Callable[[str], None],
-                 on_settings: Callable[[dict], None] = lambda settings: None):
+                 on_settings: Callable[[dict], None] = lambda settings: None,
+                 on_recording: Callable[[bool], None] = lambda recording: None):
         self.backend = backend
         self.on_state = on_state
         self.on_frame = on_frame
         self.on_status = on_status
         self.on_settings = on_settings
+        self.on_recording = on_recording
         backend.on_status = on_status
         self.connected = False
         self._commands: "queue.Queue[tuple[str, tuple]]" = queue.Queue()
@@ -131,6 +133,11 @@ class CameraWorker:
             elif command == "collect_card_movies":
                 n = self.backend.collect_card_movies()
                 self.on_status(f"{n} vidéo(s) récupérée(s) depuis la carte" if n else "Aucune vidéo sur la carte")
+            elif command in ("start_movie", "stop_movie"):
+                try:
+                    getattr(self.backend, command)()
+                finally:
+                    self.on_recording(self.backend.recording)  # bouton juste, même si la commande échoue
             elif command == "set_setting":
                 try:
                     self.backend.set_setting(*args)

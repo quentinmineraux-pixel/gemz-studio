@@ -22,6 +22,7 @@ class _Bridge(QObject):
     frame = Signal(bytes)
     status = Signal(str)
     settings = Signal(dict)
+    recording = Signal(bool)
 
 
 class LiveView(QLabel):
@@ -51,6 +52,7 @@ class CameraPanel(QWidget):
         self.bridge.frame.connect(self._on_frame)
         self.bridge.status.connect(self._on_status)
         self.bridge.settings.connect(self._on_settings)
+        self.bridge.recording.connect(self._on_recording)
         self.recording = False
         self._mark: tuple[float, float, float] | None = None  # point cliqué et heure du clic
 
@@ -146,7 +148,7 @@ class CameraPanel(QWidget):
         self.stop()
         backend.on_file = self.fileArrived.emit
         self.worker = CameraWorker(backend, self.bridge.state.emit, self.bridge.frame.emit, self.bridge.status.emit,
-                                   self.bridge.settings.emit)
+                                   self.bridge.settings.emit, self.bridge.recording.emit)
         self.state_label.setText("Recherche de l'appareil… (branche-le en USB, allume-le, ferme EOS Utility)")
         self.worker.start()
 
@@ -246,6 +248,10 @@ class CameraPanel(QWidget):
         if not enabled:
             for combo in self.combos.values():
                 combo.setEnabled(False)
+
+    def _on_recording(self, recording: bool) -> None:
+        self.recording = recording
+        self.movie_btn.setText("■ Arrêter la vidéo" if recording else "● Démarrer la vidéo")
 
     def _toggle_movie(self) -> None:
         if not self.worker:

@@ -29,6 +29,7 @@ EDS_ERR_OBJECT_NOTREADY = 0x0000A102
 kEdsPropID_ProductName = 0x00000002
 kEdsPropID_BatteryLevel = 0x00000008
 kEdsPropID_SaveTo = 0x0000000B
+kEdsSaveTo_Camera = 1
 kEdsSaveTo_Host = 2
 
 kEdsPropID_Evf_OutputDevice = 0x00000500
@@ -493,26 +494,63 @@ class EdsdkCamera(CameraBackend):
         self._retry_busy(shoot, "déclenchement")
 
     def start_movie(self) -> None:
+        # Le kit ne filme jamais vers le PC : la vidéo doit être enregistrée sur la carte
+        self._set_u32(kEdsPropID_SaveTo, kEdsSaveTo_Camera)
         try:
             self._set_u32(kEdsPropID_Record, kEdsRecord_Start)
-        except CameraError as e:
-            raise CameraError("Impossible de lancer la vidéo : place le sélecteur de visée du 6D Mark II "
-                              "sur la position vidéo (caméra rouge).") from e
+            started = False
+            for _ in range(10):  # le boîtier peut accepter la commande sans filmer : on vérifie
+                time.sleep(0.1)
+                self._events()
+                if self._get_u32(kEdsPropID_Record) == kEdsRecord_Start:
+                    started = True
+                    break
+        except CameraDisconnected:
+            raise
+        except CameraError:
+            started = False
+        if not started:
+            self._restore_save_to_host()
+            raise CameraError("La vidéo n'a pas démarré : place le sélecteur photo/vidéo du 6D Mark II sur la "
+                              "caméra rouge et vérifie qu'une carte SD est dans le boîtier.")
         self.recording = True
 
     def stop_movie(self) -> None:
-        self._set_u32(kEdsPropID_Record, kEdsRecord_Stop)
+        try:
+            self._set_u32(kEdsPropID_Record, kEdsRecord_Stop)
+        except CameraDisconnected:
+            raise
+        except CameraError:
+            if self._get_u32(kEdsPropID_Record) != kEdsRecord_Stop:
+                raise CameraError("L'appareil refuse d'arrêter la vidéo pour l'instant, réessaie.")
         self.recording = False
-        # Selon les boîtiers, l'événement de fin d'écriture n'arrive pas : on vérifie aussi la carte
-        before = self.downloads
-        for _ in range(30):
-            time.sleep(0.5)
-            if sys.platform == "win32":
-                _pump_windows_messages()
-            self.sdk.EdsGetEvent()
-            if self.downloads > before or self.collect_card_movies():
-                return
-        self.on_status("Vidéo non retrouvée sur la carte : utilise « Récupérer les vidéos de la carte ».")
+        try:
+            # Selon les boîtiers, l'événement de fin d'écriture n'arrive pas : on vérifie aussi la carte
+            before = self.downloads
+            for _ in range(30):
+                time.sleep(0.5)
+                self._events()
+                if self.downloads > before or self.collect_card_movies():
+                    return
+            self.on_status("Vidéo non retrouvée sur la carte : utilise « Récupérer les vidéos de la carte ».")
+        finally:
+            self._restore_save_to_host()
+
+    def _events(self) -> None:
+        if sys.platform == "win32":
+            _pump_windows_messages()
+        self.sdk.EdsGetEvent()
+
+    def _restore_save_to_host(self) -> None:
+        """Les photos repartent directement vers le PC."""
+        try:
+            self._set_u32(kEdsPropID_SaveTo, kEdsSaveTo_Host)
+            cap = EdsCapacity(0x7FFFFFFF, 0x1000, 1)
+            self._retry_busy(lambda: self.sdk.EdsSetCapacity(self.camera, cap), "capacité")
+        except CameraDisconnected:
+            raise
+        except CameraError as e:
+            self.on_status(f"Photos peut-être enregistrées sur la carte au lieu du PC ({e})")
 
     def collect_card_movies(self) -> int:
         count = 0
