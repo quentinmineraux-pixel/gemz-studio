@@ -46,6 +46,7 @@ class ProductInfo:
     region: str = ""
     traitement: str = "naturel"
     prix: str = ""            # prix TTC Shopify en euros
+    prix_barre: str = ""      # prix barré (promotion) sur Shopify ; vide = pas de promotion
     quantite: int = 1
     sous_categories: list[str] = field(default_factory=list)
     # bagues
@@ -57,6 +58,10 @@ class ProductInfo:
     pierres: str = ""
     perles_mm: str = ""
     fil: str = ""
+    # plateformes en plus de Shopify (toujours publié)
+    publier_etsy: bool = True
+    publier_ebay: bool = False
+    plateformes_choisies: bool = False   # sinon, cases cochées selon les réglages
 
     def missing_required(self) -> list[str]:
         missing = []
@@ -92,7 +97,8 @@ class Product:
     @classmethod
     def from_dict(cls, raw: dict) -> "Product":
         raw = dict(raw)
-        info = ProductInfo(**raw.pop("info", {}))
+        known = set(ProductInfo.__dataclass_fields__)
+        info = ProductInfo(**{k: v for k, v in raw.pop("info", {}).items() if k in known})
         return cls(info=info, **raw)
 
 

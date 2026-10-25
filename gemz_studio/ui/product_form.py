@@ -9,7 +9,9 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from ..config import ProductKind
+from ..config import ProductKind, Settings
+from ..listing.builder import price_lines
+from ..listing.prices import fmt_eur
 from ..models import STATUS_LABELS, Product, ProductInfo
 from ..quickentry import KNOWN_COUNTRIES, parse_line
 
@@ -30,6 +32,7 @@ class ProductForm(QWidget):
     processRequested = Signal(str)   # id du produit
     openFolderRequested = Signal(str)
     changed = Signal(str)
+    listingRequested = Signal(str)   # SKU du produit dans le catalogue
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,6 +40,7 @@ class ProductForm(QWidget):
         self.kind: ProductKind | None = None
         self.inputs: dict[str, QWidget] = {}
         self.subtag_boxes: list[QCheckBox] = []
+        self.settings: Settings | None = None
 
         layout = QVBoxLayout(self)
         quick = QGroupBox("Saisie rapide")
@@ -55,6 +59,22 @@ class ProductForm(QWidget):
         self.subtags_layout = QHBoxLayout(self.subtags_box)
         layout.addWidget(self.subtags_box)
 
+        plat = QGroupBox("Publier sur")
+        pl = QVBoxLayout(plat)
+        boxes = QHBoxLayout()
+        shopify = QCheckBox("Shopify")
+        shopify.setChecked(True)
+        shopify.setEnabled(False)
+        self.etsy_box = QCheckBox("Etsy")
+        self.ebay_box = QCheckBox("eBay")
+        for box in (shopify, self.etsy_box, self.ebay_box):
+            boxes.addWidget(box)
+        boxes.addStretch(1)
+        pl.addLayout(boxes)
+        self.prices = QLabel()
+        pl.addWidget(self.prices)
+        layout.addWidget(plat)
+
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -65,8 +85,11 @@ class ProductForm(QWidget):
         self.process_btn.clicked.connect(self._process)
         self.folder_btn = QPushButton("Ouvrir le dossier")
         self.folder_btn.clicked.connect(lambda: self.product and self.openFolderRequested.emit(self.product.id))
+        self.listing_btn = QPushButton("Fiche et publication")
+        self.listing_btn.clicked.connect(lambda: self.product and self.listingRequested.emit(self.product.sku))
         buttons.addWidget(self.process_btn)
         buttons.addWidget(self.folder_btn)
+        buttons.addWidget(self.listing_btn)
         layout.addLayout(buttons)
         layout.addStretch(1)
         self.setEnabled(False)
@@ -91,6 +114,8 @@ class ProductForm(QWidget):
                 w.addItems([""] + METAUX)
             else:
                 w = QLineEdit()
+                if key == "prix":
+                    w.textChanged.connect(self._refresh_prices)
             self.inputs[key] = w
             self.form.addRow(label, w)
         self.sku = QLineEdit()
@@ -133,7 +158,14 @@ class ProductForm(QWidget):
         for box in self.subtag_boxes:
             box.setChecked(box.text() in product.info.sous_categories)
         self.sku.setText(product.sku)
+        if not product.info.plateformes_choisies and self.settings:
+            product.info.publier_etsy = self.settings.default_etsy
+            product.info.publier_ebay = self.settings.default_ebay
+            product.info.plateformes_choisies = True
+        self.etsy_box.setChecked(product.info.publier_etsy)
+        self.ebay_box.setChecked(product.info.publier_ebay)
         self.quick.clear()
+        self._refresh_prices()
         self.refresh_status()
 
     def commit(self) -> None:
@@ -149,6 +181,8 @@ class ProductForm(QWidget):
             else:
                 setattr(info, key, w.text().strip())
         info.sous_categories = [b.text() for b in self.subtag_boxes if b.isChecked()]
+        info.publier_etsy, info.publier_ebay = self.etsy_box.isChecked(), self.ebay_box.isChecked()
+        info.plateformes_choisies = True
         self.product.sku = self.sku.text().strip().upper()
         self.changed.emit(self.product.id)
 
@@ -163,6 +197,18 @@ class ProductForm(QWidget):
             text += f"<br><span style='color:#c0392b'>{p.error}</span>"
         self.status.setText(text)
         self.folder_btn.setEnabled(bool(p.folder))
+        self.listing_btn.setEnabled(bool(p.folder and p.sku))
+
+    def _refresh_prices(self, *_):
+        w = self.inputs.get("prix")
+        if not self.settings or w is None:
+            return
+        prices = price_lines(ProductInfo(prix=w.text()), self.settings)
+        if not prices["shopify"]:
+            self.prices.setText("Prix Etsy et eBay calculés d'après le prix Shopify.")
+            return
+        self.prices.setText(f"Shopify {fmt_eur(prices['shopify'])} · Etsy {fmt_eur(prices['etsy'])} · "
+                            f"eBay {fmt_eur(prices['ebay_fr'])} (${prices['ebay_us_usd']:.2f} sur ebay.com)")
 
     def _apply_quick(self) -> None:
         values = parse_line(self.quick.text())

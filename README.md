@@ -2,9 +2,15 @@
 
 Outil Windows de préparation et de mise en ligne des produits GemZ (Shopify, Etsy, eBay).
 
-**Étape 1 (cette version) : le studio photo.** L'outil surveille le dossier d'EOS Utility, range les photos
-par produit pendant la séance, applique un preset de retouche et le watermark GemZ (photos et vidéo 360),
-puis range chaque produit dans son dossier avec un SKU. La publication arrive à l'étape 2.
+**Étape 1 : le studio photo.** L'outil pilote le Canon (ou surveille le dossier d'EOS Utility), range les
+photos par produit pendant la séance, applique un preset de retouche et le watermark GemZ (photos et vidéo
+360), puis range chaque produit dans son dossier avec un SKU.
+
+**Étape 2 : fiches, publication et synchro du stock.** Dès qu'un produit est traité, sa fiche est rédigée
+(format des fiches gem-z.fr, en français, anglais, espagnol et allemand), il entre dans la file de
+publication (Shopify d'abord, puis Etsy et eBay selon les cases cochées) et son stock est synchronisé entre
+les trois plateformes tant que l'application est ouverte. Les connexions aux boutiques restent à brancher
+(voir plus bas).
 
 ## Installer
 
@@ -81,8 +87,76 @@ Dossier de sortie/
 ```
 
 Le SKU reprend le format de la boutique : initiales du nom et du pays, puis le numéro suivant pour ce
-préfixe (MFC1, MFC2…). Le champ SKU de la fiche permet d'en imposer un autre (ex. `FLLAB21`). À l'étape 2,
-l'outil vérifiera que le SKU n'existe pas déjà sur Shopify avant de publier.
+préfixe (MFC1, MFC2…). Le champ SKU de la fiche permet d'en imposer un autre (ex. `FLLAB21`). L'import des
+produits Shopify fait avancer les numéros, et un SKU déjà présent sur Shopify n'est jamais recréé.
+
+## Fiches et publication
+
+- **Fiche** : bouton « Fiche et publication » (ou double-clic dans « Catalogue et ventes »). Les textes
+  fixes (intitulés, avertissement lithothérapie, note photo) sont déjà traduits ; l'IA ne rédige que
+  l'aspect, l'anecdote, la lithothérapie, le SEO et les 13 tags Etsy, en un seul appel par produit.
+  Sans clé IA, la fiche attend d'être complétée à la main (aspect et lithothérapie en français au minimum,
+  anglais en plus pour Etsy et ebay.com).
+- **Coût IA** : Claude Opus 5.5 par défaut (~0,08 € la fiche), Haiku 5.5 au choix pour ~0,002 €.
+  Plafond mensuel réglable (5 € par défaut) : au-delà, plus aucun appel.
+- **Prix** : Etsy et eBay = prix Shopify + majoration (Réglages → Prix et ventes), arrondi à ,90 ;
+  ebay.com en dollars. Bagues : taille réelle + autres tailles FR avec supplément et délai.
+- **File** : publication automatique, sans validation (choix du cahier des charges). Une erreur est
+  réessayée de plus en plus tard ; trois échecs déclenchent une notification. Réglages → Synchro permet de
+  mettre la publication en pause.
+- **Synchro** : toutes les 3 minutes, les ventes des trois plateformes sont relevées, le stock est recopié
+  partout (une pièce unique vendue sur Etsy passe épuisée sur Shopify et eBay ; une bague vendue sur Shopify
+  disparaît dans toutes ses tailles). Une pièce vendue est archivée sur Shopify (récupérable, désactivable
+  dans Réglages → Connexions). Au démarrage, les ventes faites pendant l'arrêt sont rattrapées avant toute
+  publication. Notification sur le téléphone avec ntfy.
+- **Shopify fait foi** : un stock, un prix ou un prix barré changé dans l'admin Shopify, ou un produit
+  archivé, est repris dans le catalogue puis recopié sur Etsy et eBay (après deux contrôles d'affilée, pour
+  ne jamais réagir à une vente pas encore relevée).
+- **Prix et promotions** : le prix et le prix barré se changent dans la fiche ; ils partent dans la minute.
+  Les autres tailles d'une bague gardent leur écart. Etsy et eBay n'affichent pas de prix barré.
+- **Tags et filtres Shopify** : une mise à jour n'en retire jamais (collections intactes) et ne remet pas
+  ceux retirés à la main. Si une sous-catégorie change dans la fiche, l'ancien tag reste sur Shopify et une
+  alerte le signale dans l'onglet Activité.
+- **Pièce importée de Shopify** : sa fiche garde le texte de la boutique tant qu'on ne la réécrit pas
+  (« Rédiger avec l'IA » la passe au format GemZ en 4 langues, à partir des photos de la boutique).
+
+## Catalogue et ventes
+
+- **Catalogue** : mosaïque de photos ou liste (le choix est retenu), pastilles « En ligne », « À traiter »,
+  « Erreurs », « Épuisées », « Fiche à compléter », recherche (Ctrl+F) par nom, SKU, pierre ou pays, tri par
+  date, nom, prix ou stock. Un clic montre la pièce à droite (photos ◀ ▶, prix, état sur chaque plateforme
+  avec le lien de l'annonce, derniers événements) ; double-clic ou Entrée ouvre la fiche, où
+  « ◀ Précédente / Suivante ▶ » (Alt+← / Alt+→) passe d'une pièce à l'autre. Clic droit : voir l'annonce,
+  publier aussi sur Etsy ou eBay, ouvrir le dossier des photos.
+- **Fiche** : onglet Photos pour changer l'ordre, la photo principale, en retirer ou en ajouter (même
+  retouche et même logo) ; à l'enregistrement, les photos sont remplacées sur les annonces.
+- **Ventes** : totaux du jour, du mois et de l'année, vente moyenne et répartition par plateforme sur la
+  période choisie, liste des ventes avec la photo de chaque pièce (Ctrl+2).
+- **Activité** : le journal classé par jour, filtrable (erreurs, alertes, ventes, publications…), avec les
+  lignes identiques regroupées (×N) (Ctrl+3).
+- **Ventes sur le téléphone** : Réglages → Synchro et notifications → « Mes ventes sur le téléphone ».
+  Scanner le QR code avec le téléphone (même Wi-Fi que le PC), puis l'ajouter à l'écran d'accueil. La page
+  ne s'ouvre qu'avec le code secret de l'adresse et tant que GemZ Studio est ouvert. La première fois,
+  Windows demande d'autoriser GemZ Studio sur le réseau : cocher « Réseaux privés ».
+
+## Brancher les boutiques (à faire ensemble)
+
+Tout se règle dans Réglages → Connexions. Les clés sont rangées chiffrées par Windows (secrets.bin), jamais
+dans settings.json.
+
+1. **Shopify** : créer une application dans le Dev Dashboard Shopify (droits produits, stock, commandes,
+   traductions, publications), l'installer sur la boutique, coller l'adresse xxx.myshopify.com, l'identifiant
+   client et le secret, puis « Tester la connexion ». Ensuite Catalogue et ventes → Outils → « Importer /
+   mettre à jour depuis Shopify ».
+2. **Etsy** : demander l'accès développeur (developers.etsy.com, application « personnelle »), puis coller
+   la keystring et le shared secret, « Connecter Etsy », charger les profils d'expédition et de retour,
+   choisir les catégories. Ensuite Catalogue et ventes → Outils → « Relier les annonces Etsy » (par SKU,
+   photo puis titre).
+   Une annonce Etsy épuisée dont la pièce est encore en stock ici (vendue avant la liaison) est proposée
+   aussi : une fois reliée, la dernière pièce est retirée de Shopify.
+3. **eBay** : créer le compte vendeur et le compte développeur, une application de production avec son
+   RuName, coller les identifiants, « Connecter eBay », remplir les politiques et l'emplacement.
+4. **Téléphone** : installer ntfy, s'abonner à un nom de canal secret, le coller dans Réglages → Synchro.
 
 ## Développement
 
