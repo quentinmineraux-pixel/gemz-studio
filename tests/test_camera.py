@@ -64,3 +64,30 @@ def test_dll_bits_reads_pe_header(tmp_path):
     assert dll_bits(fake_dll("b.dll", 0x8664)) == 64
     (tmp_path / "c.dll").write_bytes(b"pas une dll")
     assert dll_bits(tmp_path / "c.dll") is None
+
+
+def test_passerelle_32_bits_avec_appareil_simule(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    from gemz_studio.camera.bridge32 import BridgeCamera
+
+    monkeypatch.setenv("GEMZ_STUDIO_HOME", str(tmp_path / "donnees"))
+    monkeypatch.setenv("GEMZ_CANON32", json.dumps([sys.executable, "-m", "gemz_studio.camera.bridge32", "--fake"]))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parent.parent))
+    received, states, frames = [], [], []
+    cam = BridgeCamera(tmp_path / "recus", "")
+    cam.on_file = received.append
+    worker = CameraWorker(cam, lambda ok, text: states.append((ok, text)), frames.append, lambda text: None)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not states and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert states and states[0][0], states
+    worker.send("capture")
+    while not received and time.monotonic() < deadline:
+        time.sleep(0.05)
+    worker.stop()
+    assert received and Path(received[0]).name == "IMG_0001.JPG"
+    assert frames and frames[0][:2] == b"\xff\xd8"  # images JPEG de la visée
+    assert cam.process is None  # module 32 bits arrêté proprement

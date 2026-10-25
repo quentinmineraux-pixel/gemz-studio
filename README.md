@@ -35,7 +35,9 @@ toi-même sur le Canon Developer Portal (il n'est pas fourni avec l'outil, licen
 
 1. Dézipper le kit Canon, par exemple dans `Documents\EDSDK`.
 2. **Réglages** → Appareil photo → Mode « Pilotage direct Canon (EDSDK) », puis choisir ce dossier
-   (l'outil trouve seul `EDSDK.dll` en version 64 bits).
+   (l'outil trouve seul `EDSDK.dll`. Un kit 32 bits, comme la version 3.6.1, marche aussi : il est alors
+   chargé par le petit module `gemz-canon32.exe` inclus dans GemZ Studio, et son journal est dans
+   `%APPDATA%\GemZ Studio\canon32.log`).
 3. Fermer EOS Utility, brancher le boîtier en USB et l'allumer : il se connecte tout seul, à chaque
    ouverture de GemZ Studio.
 

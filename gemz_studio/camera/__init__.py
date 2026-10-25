@@ -16,7 +16,13 @@ MODE_LABELS = {
 
 def make_backend(mode: str, download_dir: str, sdk_folder: str = "") -> CameraBackend | None:
     if mode == MODE_CANON:
-        from .edsdk import EdsdkCamera
+        import sys
+        from .edsdk import EdsdkCamera, dll_bits, find_edsdk_dll
+        dll = find_edsdk_dll(sdk_folder)
+        if dll is not None and sys.maxsize > 2**32 and dll_bits(dll) == 32:
+            # Kit 32 bits : chargé dans le module 32 bits séparé
+            from .bridge32 import BridgeCamera
+            return BridgeCamera(download_dir, sdk_folder)
         return EdsdkCamera(download_dir, sdk_folder)
     if mode == MODE_FAKE:
         from .fake import FakeCamera
