@@ -215,6 +215,53 @@ class Etsy(Platform):
                               "offerings": [{"price": price, "quantity": max(1, quantity), "is_enabled": True}]}],
                 "price_on_property": [], "quantity_on_property": [], "sku_on_property": []}
 
+    def _readiness_id(self) -> int | None:
+        """Délai de préparation (« processing profile ») : obligatoire sur chaque offre depuis 2024."""
+        if str(self.settings.etsy_readiness_state_id).isdigit():
+            return int(self.settings.etsy_readiness_state_id)
+        if not hasattr(self, "_readiness_cache"):
+            data = self.call("GET", f"/shops/{self.settings.etsy_shop_id}/readiness-state-definitions")
+            results = data.get("results", [])
+            self._readiness_cache = int(results[0]["readiness_state_id"]) if results else None
+        return self._readiness_cache
+
+    def _with_readiness(self, inventory: dict) -> dict:
+        readiness = self._readiness_id()
+        if readiness:
+            for product in inventory["products"]:
+                for offering in product["offerings"]:
+                    offering.setdefault("readiness_state_id", readiness)
+        return inventory
+
+    def _set_inventory_quantity(self, listing_id: str, quantity: int) -> None:
+        """Change seulement les quantités de l'annonce : prix, variantes, SKU et délais restent ceux d'Etsy
+        (indispensable pour les annonces existantes reliées à l'import)."""
+        current = self.call("GET", f"/listings/{listing_id}/inventory")
+        products = []
+        for product in current.get("products", []):
+            if product.get("is_deleted"):
+                continue
+            values = [{k: v for k, v in pv.items() if k in ("property_id", "property_name", "scale_id", "value_ids",
+                                                          "values") and v is not None}
+                      for pv in product.get("property_values", [])]
+            offerings = []
+            for offering in product.get("offerings", []):
+                if offering.get("is_deleted"):
+                    continue
+                price = offering.get("price") or {}
+                amount = price.get("amount", 0) / (price.get("divisor") or 100) if isinstance(price, dict) else price
+                entry = {"price": round(float(amount), 2), "quantity": max(1, quantity),
+                         "is_enabled": offering.get("is_enabled", True)}
+                if offering.get("readiness_state_id"):
+                    entry["readiness_state_id"] = offering["readiness_state_id"]
+                offerings.append(entry)
+            products.append({"sku": product.get("sku") or "", "property_values": values, "offerings": offerings})
+        body = {"products": products,
+                "price_on_property": current.get("price_on_property", []),
+                "quantity_on_property": current.get("quantity_on_property", []),
+                "sku_on_property": current.get("sku_on_property", [])}
+        self.call("PUT", f"/listings/{listing_id}/inventory", json_body=self._with_readiness(body))
+
     def publish(self, item: CatalogItem, state: PlatformState) -> None:
         kind = self.settings.kind(item.kind_id)
         if not kind.etsy_taxonomy_id:
@@ -234,8 +281,9 @@ class Etsy(Platform):
                 "tags": item.listing.etsy_tags, "materials": item.listing.pierres[:13],
                 "should_auto_renew": True,
             }
-            if self.settings.etsy_readiness_state_id:
-                body["readiness_state_id"] = int(self.settings.etsy_readiness_state_id)
+            readiness = self._readiness_id()
+            if readiness:
+                body["readiness_state_id"] = readiness
             listing = self.call("POST", f"/shops/{shop}/listings", json_body=body)
             state.remote_id = str(listing["listing_id"])
             state.url = listing.get("url", f"https://www.etsy.com/listing/{state.remote_id}")
@@ -264,7 +312,7 @@ class Etsy(Platform):
                 self.call("POST", f"/shops/{shop}/listings/{listing_id}/videos",
                           data={"name": Path(path).name}, files={"video": (Path(path).name, f, "video/mp4")})
             done.append(path)
-        self.call("PUT", f"/listings/{listing_id}/inventory", json_body=self._inventory(item, item.stock))
+        self.call("PUT", f"/listings/{listing_id}/inventory", json_body=self._with_readiness(self._inventory(item, item.stock)))
         self._translate(item, listing_id, lang)
         self.call("PATCH", f"/shops/{shop}/listings/{listing_id}", json_body={"state": "active"})
         state.price = self._price(item)
@@ -288,10 +336,7 @@ class Etsy(Platform):
         title, description = self._texts(item, lang)
         self.call("PATCH", f"/shops/{self.settings.etsy_shop_id}/listings/{state.remote_id}",
                   json_body={"title": title, "description": description, "tags": item.listing.etsy_tags})
-        if item.stock > 0:
-            self.call("PUT", f"/listings/{state.remote_id}/inventory", json_body=self._inventory(item, item.stock))
         self._translate(item, state.remote_id, lang)
-        state.price = self._price(item)
 
     # --- stock ---------------------------------------------------------------
     def set_quantity(self, item: CatalogItem, state: PlatformState, quantity: int) -> None:
@@ -306,7 +351,7 @@ class Etsy(Platform):
                 if "sold_out" not in str(e) and "inactive" not in str(e):
                     raise
             return
-        self.call("PUT", f"/listings/{state.remote_id}/inventory", json_body=self._inventory(item, quantity))
+        self._set_inventory_quantity(state.remote_id, quantity)
         self.call("PATCH", path, json_body={"state": "active"})
 
     def remote_quantity(self, item: CatalogItem, state: PlatformState) -> int | None:
