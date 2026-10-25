@@ -64,13 +64,14 @@ class CatalogWindow(QWidget):
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(["SKU", "Produit", "Stock", "Prix", "Fiche", "Shopify", "Etsy", "eBay"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.doubleClicked.connect(self.open_listing)
         pl.addWidget(self.table, 1)
         actions = QHBoxLayout()
-        for text, slot in (("Ouvrir la fiche", self.open_listing), ("Réessayer maintenant", self.retry),
+        for text, slot in (("Ouvrir la fiche", self.open_listing), ("Ajouter à eBay", lambda: self.add_platform("ebay")),
+                           ("Ajouter à Etsy", lambda: self.add_platform("etsy")), ("Réessayer maintenant", self.retry),
                            ("Synchroniser le stock", self.sync_now), ("Importer depuis Shopify", self.import_shopify),
                            ("Relier les annonces Etsy", self.link_etsy), ("Retirer du catalogue", self.remove)):
             b = QPushButton(text)
@@ -173,7 +174,32 @@ class CatalogWindow(QWidget):
         item = self.table.item(row, 0) if row >= 0 else None
         return item.text() if item else ""
 
+    def _selected_skus(self) -> list[str]:
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        return [self.table.item(r, 0).text() for r in rows if self.table.item(r, 0)]
+
     # --- actions -----------------------------------------------------------
+    def add_platform(self, name: str) -> None:
+        """Publier aussi les pièces sélectionnées (Ctrl+clic ou Maj+clic pour en choisir plusieurs)."""
+        skus = self._selected_skus()
+        if not skus:
+            QMessageBox.information(self, "Catalogue", "Sélectionne d'abord une ou plusieurs pièces "
+                                    "(Ctrl+clic pour en choisir plusieurs).")
+            return
+        label = PLATFORM_LABELS[name]
+        if QMessageBox.question(self, "Catalogue", f"Publier {len(skus)} pièce(s) sur {label} ?") != QMessageBox.Yes:
+            return
+
+        def apply(item):
+            state = item.state(name)
+            if not state.wanted:
+                state.wanted, state.status, state.next_try, state.error = True, A_PUBLIER, 0.0, ""
+        for sku in skus:
+            self.app.catalog.update(sku, apply)
+        self.app.catalog.log("info", f"{len(skus)} pièce(s) ajoutée(s) à {label}", platform=name)
+        self.app.engine.wake()
+        self.refresh()
+
     def open_listing(self, *_):
         sku = self._selected_sku()
         if sku:

@@ -179,8 +179,14 @@ class Ebay(Platform):
         if not self.settings.ebay_location_key:
             raise NotConfigured("Adresse d'expédition eBay (emplacement) à créer (Réglages → Connexions).")
         images = state.extra.setdefault("images", [])
-        for path in item.photos[len(images):]:
-            images.append(self.upload_image(path))
+        if item.photos:
+            for path in item.photos[len(images):]:
+                images.append(self.upload_image(path))
+        elif not images:
+            # Pièce importée de Shopify : eBay reprend directement les photos de la boutique (adresses https)
+            images.extend(u for u in item.state("shopify").extra.get("images", [])[:24] if u.startswith("https://"))
+        if not images:
+            raise PlatformError("Aucune photo pour l'annonce eBay.")
         offers = state.extra.setdefault("offers", {})
         for market in self._markets():
             policies = self.settings.ebay_policies.get(market, {})

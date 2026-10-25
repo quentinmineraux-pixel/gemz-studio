@@ -242,12 +242,20 @@ class Etsy(Platform):
         listing_id = state.remote_id
         done = state.extra.setdefault("uploaded", [])   # reprise après coupure : pas de doublon de photo
         alt = item.listing.texts[lang].alt[:250]
-        for rank, path in enumerate(item.photos[:20], start=1):
+        # Pièce importée de Shopify (pas de photos locales) : on reprend les photos de la boutique
+        sources = item.photos or [u for u in item.state("shopify").extra.get("images", []) if u.startswith("https://")]
+        for rank, path in enumerate(sources[:20], start=1):
             if path in done:
                 continue
-            with open(path, "rb") as f:
-                self.call("POST", f"/shops/{shop}/listings/{listing_id}/images",
-                          data={"rank": rank, "alt_text": alt}, files={"image": (Path(path).name, f, "image/jpeg")})
+            if path.startswith("https://"):
+                r = request(self._http(), "GET", path, timeout=120)
+                if r.status_code != 200:
+                    raise PlatformError(f"Photo Shopify introuvable ({r.status_code}) : {path}", retryable=True)
+                content, name = r.content, f"{item.sku}_{rank:02d}.jpg"
+            else:
+                content, name = Path(path).read_bytes(), Path(path).name
+            self.call("POST", f"/shops/{shop}/listings/{listing_id}/images",
+                      data={"rank": rank, "alt_text": alt}, files={"image": (name, content, "image/jpeg")})
             done.append(path)
         for path in item.videos[:1]:
             if path in done:
